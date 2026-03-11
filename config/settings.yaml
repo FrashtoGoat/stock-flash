@@ -1,0 +1,96 @@
+# Stock Flash 全局配置
+
+# 新闻源配置
+news:
+  jin10:
+    enabled: false              # 金十免费API已于2025.12停服
+    api_url: "https://flash-api.jin10.com/get"
+    max_items: 20
+    categories: ["stock", "macro"]
+  sina:
+    enabled: true
+    max_items: 20
+    zhibo_id: 152               # 新浪财经7x24直播间ID
+  eastmoney:
+    enabled: true
+    max_items: 20
+
+# LLM 大模型配置
+llm:
+  active_provider: "bailian"   # bailian / zhipu — 切换只需改这里
+  temperature: 0.3
+  max_tokens: 4000
+  providers:
+    bailian:
+      api_key: "${BAILIAN_API_KEY}"
+      base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+      model: "qwen-plus"
+    zhipu:
+      api_key: "${ZHIPU_API_KEY}"
+      # 默认官方 API；自部署时在 .env 设置 ZHIPU_BASE_URL 覆盖
+      base_url: "${ZHIPU_BASE_URL:https://open.bigmodel.cn/api/paas/v4/}"
+      model: "glm-4-flash"
+
+# 筛选器链配置
+filters:
+  board_filter:
+    enabled: true
+    allowed_boards: ["main"]
+  master_filter:
+    enabled: true
+    strategies: ["value", "growth"]
+  technical_filter:
+    enabled: true
+    conditions:
+      ma_trend: "up"
+      volume_ratio_min: 1.2
+      macd_signal: "golden"
+
+# 大盘判断配置
+market:
+  index_code: "sh000001"
+  max_decline_pct: -2.0
+  reference_indices:
+    - "sh000001"
+    - "sz399001"
+    - "sz399006"
+
+# 交易配置
+trading:
+  mode: "simulated"
+  broker: "eastmoney"
+  max_position_pct: 10
+  max_total_positions: 5
+  default_amount: 10000
+
+# 通知配置
+notification:
+  email:
+    enabled: true
+    smtp_server: "smtp.qq.com"
+    smtp_port: 465
+    sender: "${EMAIL_SENDER}"
+    password: "${EMAIL_PASSWORD}"
+    receivers:
+      - "${EMAIL_RECEIVER}"
+  wechat:
+    enabled: false
+    webhook_url: ""
+
+# 定时器配置
+scheduler:
+  enabled: true
+  jobs:
+    - name: "morning_scan"
+      cron: "30 9 * * 1-5"
+    - name: "afternoon_scan"
+      cron: "0 13 * * 1-5"
+    - name: "news_monitor"
+      cron: "*/5 9-15 * * 1-5"
+
+# 日志配置
+logging:
+  level: "INFO"
+  file: "logs/stock-flash.log"
+  max_size_mb: 10
+  backup_count: 5
