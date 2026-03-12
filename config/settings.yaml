@@ -31,20 +31,35 @@ llm:
       base_url: "${ZHIPU_BASE_URL:https://open.bigmodel.cn/api/paas/v4/}"
       model: "glm-4-flash"
 
-# 筛选器链配置
+# 筛选器链配置 (执行顺序: board → affordability → master → technical)
 filters:
   board_filter:
     enabled: true
     allowed_boards: ["main"]
+  affordability_filter:
+    enabled: true
+    max_price: 100
+    allowed_boards: ["main"]
   master_filter:
     enabled: true
-    strategies: ["value", "growth"]
+    thresholds:
+      pe_max: 40
+      pb_max: 6
+      roe_min: 8
+      debt_ratio_max: 70
+      revenue_growth_min: 5
+      market_cap_min_yi: 50
   technical_filter:
     enabled: true
     conditions:
-      ma_trend: "up"
-      volume_ratio_min: 1.2
-      macd_signal: "golden"
+      volume_ratio_min: 0.8
+      volume_ratio_max: 5.0
+      turnover_rate_min: 1.0
+      turnover_rate_max: 15.0
+      profit_ratio_min: 30.0
+      ma_trend: "bullish"
+      require_above_ma20: true
+      macd_mode: "positive"
 
 # 大盘判断配置
 market:

@@ -65,6 +65,13 @@
 | 可交易性标注 | `StockTarget.tradable` | ✅ | 自动根据 board 标注可买/需开通权限 |
 | 板块筛选改标注 | `board_filter.py` | ✅ | 不再过滤非主板标的，改为 details 标注 |
 | Git提交规则 | `todolist_skill.md` | ✅ | 用户说"提交"即 commit+push |
+| 利空分析 | `src/analyzer/bearish_analyzer.py` | ✅ | 大盘影响+行业风险，与利好并行调用 |
+| 利空模型 | `src/models/stock.py` | ✅ | RiskLevel/MarketImpact/IndustryRisk/BearishAnalysis |
+| 利空Prompt | `config/prompts/bearish_*.txt` | ✅ | 系统+用户模板，只分析大盘/行业层面 |
+| DataFetcherManager | `src/data/fetcher_manager.py` | ✅ | 多源故障切换+CircuitBreaker熔断保护 |
+| 大师选股v2 | `src/filters/master_filter.py` | ✅ | 5维: ROE/PE+PB/资产负债率/营收增长/市值 |
+| 可买筛选器 | `src/filters/affordability_filter.py` | ✅ | 股价<100元 + 沪深主板/ETF |
+| 技术选股v2 | `src/filters/technical_filter.py` | ✅ | 量比+换手率+筹码+均线+MACD+量能 |
 
 ### 🔨 待完善
 

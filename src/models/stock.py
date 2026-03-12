@@ -109,6 +109,43 @@ class FilterResult(BaseModel):
         return len(self.failed_filters) == 0
 
 
+class RiskLevel(str, Enum):
+    NONE = "none"
+    MILD = "mild"
+    MODERATE = "moderate"
+    SEVERE = "severe"
+
+
+class RiskDuration(str, Enum):
+    SHORT = "short"
+    MEDIUM = "medium"
+    LONG = "long"
+
+
+class MarketImpact(BaseModel):
+    """利空对大盘的影响"""
+    level: RiskLevel = RiskLevel.NONE
+    description: str = ""
+    duration: RiskDuration = RiskDuration.SHORT
+    sentiment_shift: str = ""
+
+
+class IndustryRisk(BaseModel):
+    """利空对行业的影响"""
+    industry: str
+    level: RiskLevel = RiskLevel.MILD
+    reason: str = ""
+    logic: str = ""
+    affected_etfs: list[str] = Field(default_factory=list)
+    related_news: list[str] = Field(default_factory=list)
+
+
+class BearishAnalysis(BaseModel):
+    """利空分析结果"""
+    market_impact: MarketImpact = Field(default_factory=MarketImpact)
+    industry_risks: list[IndustryRisk] = Field(default_factory=list)
+
+
 class MarketCondition(BaseModel):
     """大盘状况"""
     index_code: str

@@ -70,6 +70,41 @@
 
 每次用户提出的需求/指令，按时间倒序记录。
 
+### 2026-03-12 需求 #10
+
+**原始提示词**:
+> 1 前面是筛选利好的，再加一个利空的（只要包括对大盘和行业的影响即可）
+> 2 筛选器的实现，其中大师选股是指基本面包括财报、龙头、市占率高等等（即使被套了也有翻身机会）
+> 2.2 我能买的，包括价格不要太高低于100元，沪深
+> 2.3 技术选型 包括但不限于：获取实时行情（量比、换手率）通过 DataFetcherManager 自动故障切换；获取筹码分布 带熔断保护；进行趋势分析（基于交易理念）
+
+**执行结果**:
+- **利空分析**:
+  - 新增 `config/prompts/bearish_system.txt` + `bearish_user.txt` — 利空 Prompt
+  - 新增 `src/analyzer/bearish_analyzer.py` — 解析大盘影响 + 行业风险
+  - 新增模型: `RiskLevel`, `RiskDuration`, `MarketImpact`, `IndustryRisk`, `BearishAnalysis`
+  - 主流水线 Step 4 改为利好+利空并行调用 `asyncio.gather`
+  - 测试脚本输出 `result/bearish_result.txt`
+- **大师选股重写** (`master_filter.py`):
+  - 5维筛选: 盈利(ROE)、估值(PE/PB)、成长(营收增长)、财务健康(资产负债率)、龙头(市值)
+  - 核心三项(盈利+估值+财务)必过，成长/龙头为加分项
+  - ETF 跳过基本面筛选
+- **新增可买筛选器** (`affordability_filter.py`):
+  - 股价 < 100 元
+  - 板块权限: 沪深主板 或 ETF
+- **技术选股重写** (`technical_filter.py`):
+  - 实时行情: 量比(0.8-5)、换手率(1-15%)
+  - 筹码分布: 获利比例(>30%)、集中度
+  - 趋势分析: 均线多头(MA5>MA10>MA20)、价格站上MA20、MACD水上/金叉、量能趋势
+- **DataFetcherManager** (`src/data/fetcher_manager.py`):
+  - 多数据源自动故障切换
+  - CircuitBreaker 熔断保护(3次失败→60秒冷却)
+  - 统一接口: `get_kline`, `get_realtime_quote`, `get_chip_distribution`
+- 筛选链顺序: board(标注) → affordability(可买) → master(基本面) → technical(技术)
+- 32 个原有测试全部通过
+
+---
+
 ### 2026-03-11 需求 #9
 
 **原始提示词**:

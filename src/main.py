@@ -10,6 +10,7 @@ import asyncio
 import logging
 from datetime import datetime
 
+from src.analyzer.bearish_analyzer import analyze_bearish
 from src.analyzer.llm_analyzer import analyze_news
 from src.config import get
 from src.filters.factory import create_filter_chain
@@ -60,9 +61,18 @@ async def pipeline() -> None:
                      n.title[:40], n.keywords,
                      [s.get("name", "") for s in n.related_stocks] or "-")
 
-    # Step 4: LLM 分析利好标的
+    # Step 4: LLM 分析（利好+利空 并行）
     logger.info("[Step 4] LLM 分析 (%d 条新闻)...", len(worth_news))
-    targets = await analyze_news(worth_news)
+    bullish_task = analyze_news(worth_news)
+    bearish_task = analyze_bearish(worth_news)
+    targets, bearish = await asyncio.gather(bullish_task, bearish_task)
+
+    # 利空报告
+    mi = bearish.market_impact
+    logger.info("[利空] 大盘影响=%s | %s", mi.level.value, mi.description or "无")
+    for risk in bearish.industry_risks:
+        logger.info("  [利空] %s (%s): %s", risk.industry, risk.level.value, risk.reason)
+
     if not targets:
         logger.info("LLM 未分析出利好标的，流水线结束")
         return

@@ -25,9 +25,10 @@ def _ensure_builtins() -> None:
     """延迟导入内置筛选器，触发 @register 装饰器"""
     if _REGISTRY:
         return
-    import src.filters.board_filter     # noqa: F401
-    import src.filters.master_filter    # noqa: F401
-    import src.filters.technical_filter # noqa: F401
+    import src.filters.board_filter         # noqa: F401
+    import src.filters.affordability_filter  # noqa: F401
+    import src.filters.master_filter        # noqa: F401
+    import src.filters.technical_filter     # noqa: F401
 
 
 def create_filter_chain() -> FilterChain:

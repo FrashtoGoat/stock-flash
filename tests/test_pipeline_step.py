@@ -112,8 +112,10 @@ async def step_news(run_no: int, prompt_ref: str) -> list:
 
 
 async def step_llm(worth_news: list, run_no: int, prompt_ref: str) -> None:
-    """Step 3: 调用 LLM 深度分析"""
+    """Step 3: 调用 LLM 深度分析（利好+利空）"""
     from src.analyzer.llm_analyzer import analyze_news, _build_news_block, _load_prompt
+    from src.analyzer.bearish_analyzer import analyze_bearish, _parse_bearish_response
+    from src.analyzer.bearish_analyzer import _load_prompt as _load_bearish_prompt
     from src.llm_provider.factory import create_provider
     from src.llm_provider.base import ChatMessage
     from src.config import get
@@ -216,7 +218,79 @@ async def step_llm(worth_news: list, run_no: int, prompt_ref: str) -> None:
         lines.append(traceback.format_exc())
 
     _append(LLM_RESULT, "\n".join(lines))
-    p(f"\n  >> 追加到: {LLM_RESULT}")
+    p(f"\n  >> 利好结果追加到: {LLM_RESULT}")
+
+    # ---- 利空分析 ----
+    BEARISH_RESULT = RESULT_DIR / "bearish_result.txt"
+    p(f"\n{'=' * 60}")
+    p(f"[RUN #{run_no}] Step 3b: LLM 利空分析")
+    p("=" * 60)
+
+    bear_lines: list[str] = []
+    bear_lines.append(f"\n\n{'#' * 80}")
+    bear_lines.append(f"#RUN {run_no} | 时间: {datetime.now():%Y-%m-%d %H:%M:%S} | 关联提示词: {prompt_ref}")
+    bear_lines.append(f"{'#' * 80}")
+
+    try:
+        bear_system = _load_bearish_prompt("bearish_system.txt")
+        bear_user_tpl = _load_bearish_prompt("bearish_user.txt")
+        bear_news_block = _build_news_block(worth_news)
+        bear_user = bear_user_tpl.format(count=len(worth_news), news_block=bear_news_block)
+
+        bear_lines.append(f"\n--- Bearish System Prompt ---\n{bear_system}")
+        bear_lines.append(f"\n--- Bearish User Prompt ---\n{bear_user}")
+
+        provider2 = create_provider()
+        bear_msgs = [
+            ChatMessage(role="system", content=bear_system),
+            ChatMessage(role="user", content=bear_user),
+        ]
+        bear_resp = await provider2.chat(
+            messages=bear_msgs,
+            temperature=llm_cfg.get("temperature", 0.3),
+            max_tokens=llm_cfg.get("max_tokens", 4000),
+        )
+        p(f"  利空分析调用成功!")
+        if bear_resp.usage:
+            p(f"  Token: {bear_resp.usage.get('total_tokens', '?')}")
+
+        bear_lines.append(f"\n--- 利空 LLM 原始返回 ---\n{bear_resp.content}")
+        if bear_resp.usage:
+            bear_lines.append(f"Token: {bear_resp.usage}")
+
+        bearish = _parse_bearish_response(bear_resp.content)
+        mi = bearish.market_impact
+        p(f"\n  [大盘影响] {mi.level.value} | {mi.description}")
+        p(f"    持续: {mi.duration.value} | 情绪: {mi.sentiment_shift}")
+        bear_lines.append(f"\n--- 解析结果 ---")
+        bear_lines.append(f"大盘影响: {mi.level.value} | {mi.description}")
+        bear_lines.append(f"持续: {mi.duration.value} | 情绪: {mi.sentiment_shift}")
+
+        if bearish.industry_risks:
+            p(f"\n  [行业风险] 共 {len(bearish.industry_risks)} 个:")
+            bear_lines.append(f"\n行业风险 ({len(bearish.industry_risks)} 个):")
+            for risk in bearish.industry_risks:
+                p(f"    [{risk.level.value}] {risk.industry}: {risk.reason}")
+                if risk.logic:
+                    p(f"      传导: {risk.logic[:100]}...")
+                bear_lines.append(f"  [{risk.level.value}] {risk.industry}")
+                bear_lines.append(f"    原因: {risk.reason}")
+                bear_lines.append(f"    传导: {risk.logic}")
+                if risk.affected_etfs:
+                    bear_lines.append(f"    受影响ETF: {risk.affected_etfs}")
+                bear_lines.append("")
+        else:
+            p("  无明显行业利空")
+            bear_lines.append("无行业风险")
+
+    except Exception as e:
+        p(f"  利空分析失败: {e}")
+        bear_lines.append(f"\n--- 利空分析失败 ---\n{e}")
+        import traceback
+        bear_lines.append(traceback.format_exc())
+
+    _append(BEARISH_RESULT, "\n".join(bear_lines))
+    p(f"\n  >> 利空结果追加到: {BEARISH_RESULT}")
 
 
 async def main():
