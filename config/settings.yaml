@@ -31,7 +31,7 @@ llm:
       base_url: "${ZHIPU_BASE_URL:https://open.bigmodel.cn/api/paas/v4/}"
       model: "glm-4-flash"
 
-# 筛选器链配置 (执行顺序: board → affordability → master → technical)
+# 筛选器链配置 (执行顺序: board → affordability → anomaly → master → institution → technical)
 filters:
   board_filter:
     enabled: true
@@ -40,6 +40,14 @@ filters:
     enabled: true
     max_price: 100
     allowed_boards: ["main"]
+  anomaly_filter:
+    enabled: true
+    conditions:
+      max_5d_change_pct: 25.0       # 5日涨幅上限，超过可能见顶
+      min_5d_change_pct: -15.0      # 5日跌幅下限，超过可能接飞刀
+      max_1d_change_pct: 9.5        # 当日涨幅上限
+      min_1d_change_pct: -7.0       # 当日跌幅下限
+      min_up_days_in_5: 2           # 近5日至少N天收阳
   master_filter:
     enabled: true
     thresholds:
@@ -49,6 +57,10 @@ filters:
       debt_ratio_max: 70
       revenue_growth_min: 5
       market_cap_min_yi: 50
+  institution_filter:
+    enabled: true
+    min_institutions: 1             # 十大流通股东中至少N个机构
+    require_margin_up: false        # 是否要求融资余额上升
   technical_filter:
     enabled: true
     conditions:
@@ -70,27 +82,53 @@ market:
     - "sz399001"
     - "sz399006"
 
-# 交易配置
+# 存储配置（数据库，用于交易记录 / 止盈止损 / 回测）
+storage:
+  enabled: true
+  database:
+    url: ""   # 空则默认 data/stock_flash.db（SQLite）
+
+# 交易配置（mode: simulated 仅落库 | paper 模拟盘 | ctp OpenCTP仿真 | live 实盘暂未实现）
 trading:
-  mode: "simulated"
+  mode: "simulated"   # simulated / paper / ctp(OpenCTP仿真) / live
   broker: "eastmoney"
   max_position_pct: 10
   max_total_positions: 5
   default_amount: 10000
+  # 止盈止损（持仓检查时使用）
+  stop_profit_pct: 0.10    # 单票盈利达到 10% 止盈
+  stop_loss_pct: -0.05     # 单票亏损达到 5% 止损
+  hold_days_min: 1         # 最短持仓天数，避免当日买卖
+  # OpenCTP 仿真/7x24（mode=ctp 时使用）；敏感信息建议用环境变量：${OPENCTP_USER}、${OPENCTP_PASSWORD}
+  ctp:
+    enabled: false
+    user_id: "17572"        # 7x24 账号（全天可测）；仿真可用 16988
+    password: "123456"
+    broker_id: "9999"
+    td_url: "tcp://trading.openctp.cn:30001"   # 7x24；仿真用 tcp://trading.openctp.cn:30002
+    app_id: ""
+    auth_code: ""
 
 # 通知配置
 notification:
+  # 邮箱通知：发件人显示名「量化小龙虾」，收件人见 receivers；密码用 QQ 邮箱授权码填 .env
   email:
     enabled: true
     smtp_server: "smtp.qq.com"
     smtp_port: 465
     sender: "${EMAIL_SENDER}"
+    sender_name: "量化小龙虾"
     password: "${EMAIL_PASSWORD}"
     receivers:
-      - "${EMAIL_RECEIVER}"
+      - "1271573554@qq.com"
+  # 企业微信群机器人：群设置 -> 添加群机器人 -> 复制 webhook 地址即可，不麻烦
   wechat:
     enabled: false
-    webhook_url: ""
+    webhook_url: ""   # 例: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx
+  # PushPlus 已关闭，改用邮箱通知
+  pushplus:
+    enabled: false
+    token: "${PUSHPLUS_TOKEN:}"
 
 # 定时器配置
 scheduler:

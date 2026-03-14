@@ -70,6 +70,97 @@
 
 每次用户提出的需求/指令，按时间倒序记录。
 
+### 2026-03-15 需求 #14
+
+**原始提示词**（摘要）:
+> 1 将计算的结果统一放到 result 文件夹包括 data/trades/trade_20260314_231201.json，然后按照日期分组  
+> 2 这是模拟交易？我要的是对接真实的模拟账户，给我推荐一个好用的模拟账号
+
+**执行结果**:
+- **结果统一 + 按日期分组**：交易记录 JSON 改为写入 **`result/trades/YYYY-MM-DD/`**（不再使用 `data/trades/`）；回测从 `result/trades/*/*.json` 读取。新增一次性迁移：首次执行时把 `data/trades/` 下已有 `trade_*.json` 按文件名日期迁移到 `result/trades/对应日期/`。README 增加「计算结果与输出」小节。
+- **模拟交易 vs 真实模拟账户**：当前「模拟交易」(mode=simulated) 仅为本地落 JSON+DB，不连券商。README 增加「模拟交易 vs 真实模拟账户」小节，说明对接真实模拟账户需在 PaperExecutor 内接券商模拟盘 API，并推荐：**东方财富模拟炒股**、**券商+QMT/miniQMT 模拟**、**同花顺模拟炒股**，建议先跑通策略再选其一对接。
+
+---
+
+### 2026-03-15 需求 #13
+
+**原始提示词**（摘要，脱敏）:
+> 1 时间记录用东八区时间（上海）；实盘这里包括模拟盘吗，需要先对接模拟操作让整个操作闭环（真实下单先不实现）；SQLite 还没下载，Windows 帮忙下载到 D 盘 Program Files
+> 2 按 README 后续规划开始做：数据库存储、止盈止损、回测、实盘预留；模拟交易接口快实现
+> 3 去掉 SQLite 下载文档（Python 自带即可）；东八区是想说现在是北京时间 23:03 别搞错时间；模拟盘接口快实现
+> 4 README：能跑通整个流程了吗；回测是干嘛的、要每天跑定时器吗 → 补充常见问题
+> 5 prompts 文件最近怎么不更新了；想跑通整个流程，检查缺什么，没问题开始跑
+
+**执行结果**:
+- **东八区时间**：todolist 顶部「最后更新」及记录时间统一为东八区/北京时间（例：2026-03-15 23:03）。
+- **实盘与模拟盘**：实盘不含模拟盘；规划为先对接**模拟盘**（券商仿真）形成闭环，实盘暂不实现。README/todolist 已区分「模拟盘交易」「实盘交易」。
+- **SQLite**：去掉 README 中下载/安装说明，仅保留「Python 自带 sqlite3，无需单独安装」；脚本 `scripts/install_sqlite_tools.ps1` 保留供可选使用。
+- **后续规划落地**：数据库（SQLite+SQLAlchemy、trades 表、storage.enabled）、止盈止损（position_manager+配置+流水线末尾检查）、回测（run.py --backtest）、模拟盘接口（PaperExecutor，mode=paper 落 JSON+DB）。
+- **模拟盘接口**：新增 `PaperExecutor`，`trading.mode: paper` 时使用，当前与 Simulated 同样落库，后续接券商模拟盘 API。
+- **README 常见问题**：补充「能跑通吗」「回测是干嘛的」「回测要每天定时吗」三条。
+- **prompts 更新**：本条目为补记；规则要求每次需求均记录，后续会持续更新。
+- **跑通检查与执行**：配置检查通过（LLM=bailian、email 开启）；执行 `python run.py --test`，Step 1～8 全部完成：测试新闻 3 条 → 预处理 → LLM 4 个标的 → 链式筛选 4/4 通过 → 大盘判断（实时接口断开时已用最近交易日 2026-03-13 数据）→ 邮件发送成功 → 模拟交易 4 笔落 JSON+DB，耗时约 51 秒。**结论：当前无缺项，整条流程可跑通。**
+
+---
+
+### 2026-03-13 需求 #12
+
+**原始提示词**:
+> 1 todolist 这里只有新闻处理流程，全程的呢
+> 2 result/filter_result.txt 结果加上时间 yyyy-MM-dd HH:mm:ss；change_1d_pct/change_5d_pct 是什么意思；尽量用中文或者中英
+> 3 机构筛选 龙虎榜有吗也加上
+> 4 接下来是通知模块，能个微通知吗，企微会不会比较麻烦
+
+**执行结果**:
+- **完整流水线**：在 todolist 中新增「完整流水线（全程）」图，包含 Step1~8（拉取→去重→预处理→LLM利好利空→链式筛选→大盘判断→通知→交易），新闻处理流程保留为 Step3 明细。
+- **filter_result 输出**：
+  - 每 RUN 增加「执行时间: yyyy-MM-dd HH:mm:ss」；汇总末尾再次输出该时间。
+  - 字段名改为中文/中英（RESULT_LABELS 映射），如 涨跌幅(1日)%、涨跌幅(5日)%、近5日收阳天数、当前价、量比、市盈率PE 等。
+  - 异动筛选块增加说明行：「涨跌幅(1日)=当日涨跌%, 涨跌幅(5日)=近5日涨跌%, 收阳天数=近5日收盘上涨天数」。
+  - 结果/结论用「通过」「未通过」「全部通过」。
+- **龙虎榜**：机构筛选器增加 龙虎榜 检测（akshare `stock_lhb_stock_detail_date_em`），输出 近期是否上榜、上榜日期列表（默认近10日），details 中增加「龙虎榜」节点；配置项 `lhb_recent_days`。
+- **微信通知**：
+  - **企微**：群机器人 webhook（不麻烦：群设置→添加机器人→复制 webhook），`notification.wechat.enabled` + `webhook_url`，POST 文本消息。
+  - **个微**：PushPlus（pushplus.plus 绑定微信获取 token），`notification.pushplus.enabled` + `token`，POST 标题+内容；.env 可选 `PUSHPLUS_TOKEN`。
+  - 通知入口依次调用：邮件 → 企微 webhook → PushPlus。
+
+---
+
+### 2026-03-12 需求 #11
+
+**原始提示词**:
+> 1 当我说提交的时候才提交
+> 2 筛选器包括但不限于当前的内容，你觉得有更好的也可以提供
+> 3 分段测试筛选器，拿result里面的结果测试
+
+**执行结果**:
+- 确认提交规则：只在用户说"提交"时才执行 git commit+push
+- **新增 anomaly_filter** (异动监控)：
+  - 5日涨跌幅范围(-15%~25%)，排除暴涨暴跌
+  - 当日涨跌幅范围(-7%~9.5%)，排除涨停/跌停接盘
+  - 近5日至少2天收阳，确保资金连续性
+- **新增 institution_filter** (机构/聪明资金)：
+  - 十大股东中检测基金/社保/证金/汇金/QFII等机构持仓
+  - 使用新浪 `stock_main_stock_holder` 接口（修复了原 stock_gdfx 参数错误）
+- **修复 master_filter** 数据源：
+  - PE/PB: 改用 `stock_zh_valuation_baidu`（百度估值接口，原 stock_individual_info_em 无此数据）
+  - ROE/资产负债率/营收增长: 改用 `stock_financial_abstract_ths`（同花顺财报摘要）
+  - 修复前：PE/PB/ROE 全部 nan → 修复后：中国石油 PE=14.13/PB=1.44/ROE=11.1%
+- **修复 chip_profit 百分比**：akshare 返回 0-1 范围，筛选阈值是 0-100，增加自动转换
+- **新建 test_filter_step.py** (筛选器分段测试)：
+  - 从 `result/llm_result.txt` 解析最近一次 LLM 结果
+  - 支持 `--run N` 指定 RUN 轮次，`--codes 601857,601808` 直接指定代码
+  - 逐个筛选器独立测试（不短路），输出每个检查项 OK/X 详情
+  - 结果追加到 `result/filter_result.txt`
+- 筛选链: board → affordability → anomaly → master → institution → technical (6个)
+- **实测结果 (RUN #2)**:
+  - 石油ETF(160216): ALL PASS (ETF跳过个股筛选)
+  - 中国石油(601857): 5/6通过，被 technical_filter 拦截(均线非多头+量比偏低)
+  - 中海油服(601808): 5/6通过，被 technical_filter 拦截(均线非多头+量比偏低)
+  - 中国海油(600938): **ALL PASS** — PE=16.58/PB=2.6/ROE=19.36%/均线多头/MACD水上
+
+---
+
 ### 2026-03-12 需求 #10
 
 **原始提示词**:

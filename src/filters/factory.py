@@ -29,6 +29,8 @@ def _ensure_builtins() -> None:
     import src.filters.affordability_filter  # noqa: F401
     import src.filters.master_filter        # noqa: F401
     import src.filters.technical_filter     # noqa: F401
+    import src.filters.anomaly_filter       # noqa: F401
+    import src.filters.institution_filter   # noqa: F401
 
 
 def create_filter_chain() -> FilterChain:

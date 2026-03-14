@@ -89,9 +89,11 @@ class TechnicalFilter:
         # ---- 2. 筹码分布 ----
         chip = get_chip_distribution(stock.code)
         if chip:
-            profit_ratio = chip.get("profit_ratio", 0)
+            raw_ratio = chip.get("profit_ratio", 0)
+            profit_ratio = raw_ratio * 100 if raw_ratio <= 1 else raw_ratio
             checks["chip_profit"] = profit_ratio >= self.cond["profit_ratio_min"]
             details["chip"] = chip
+            details["chip_profit_pct"] = round(profit_ratio, 1)
         else:
             checks["chip_profit"] = True
             details["chip"] = "N/A (数据未获取)"

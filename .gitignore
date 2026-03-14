@@ -12,7 +12,10 @@ logs/*
 
 data/trades/
 data/seen_news.json
+data/*.db
 result/
+flow_ctp_*/
+*.con
 
 .venv/
 venv/

@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 import akshare as ak
 
@@ -33,25 +34,58 @@ _DEFAULT_THRESHOLDS = {
 }
 
 
-def _get_fundamentals(code: str) -> dict:
-    """获取个股基本面数据（akshare stock_individual_info_em）"""
+def _safe_float(value, default: float = float("nan")) -> float:
+    if isinstance(value, str):
+        value = value.replace("%", "").replace(",", "").strip()
+        if value in ("", "-", "None", "False"):
+            return default
     try:
-        df = ak.stock_individual_info_em(symbol=code)
-        info: dict = {}
-        for _, row in df.iterrows():
-            info[row["item"]] = row["value"]
-        return info
-    except Exception:
-        logger.warning("获取 %s 基本面数据失败", code)
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_valuation(code: str) -> dict:
+    """从百度接口获取最新 PE(TTM) 和 PB"""
+    result: dict = {}
+    for indicator, key in [("市盈率(TTM)", "pe"), ("市净率", "pb")]:
+        try:
+            df = ak.stock_zh_valuation_baidu(symbol=code, indicator=indicator, period="近一年")
+            if df is not None and not df.empty:
+                result[key] = float(df.iloc[-1]["value"])
+        except Exception as e:
+            logger.debug("获取 %s %s 失败: %s", code, indicator, e)
+    return result
+
+
+def _get_financials(code: str) -> dict:
+    """从同花顺接口获取 ROE、资产负债率、营收增长率"""
+    try:
+        df = ak.stock_financial_abstract_ths(symbol=code, indicator="按年度")
+        if df is None or df.empty:
+            return {}
+        latest = df.iloc[-1]
+        return {
+            "roe": _safe_float(latest.get("净资产收益率")),
+            "debt_ratio": _safe_float(latest.get("资产负债率")),
+            "revenue_growth": _safe_float(latest.get("营业总收入同比增长率")),
+            "report_period": str(latest.get("报告期", "")),
+        }
+    except Exception as e:
+        logger.debug("获取 %s 财报摘要失败: %s", code, e)
         return {}
 
 
-def _safe_float(value, default: float = float("nan")) -> float:
+def _get_market_cap(code: str) -> float:
+    """从 stock_individual_info_em 获取总市值（亿）"""
     try:
-        v = float(value)
-        return v
-    except (ValueError, TypeError):
-        return default
+        df = ak.stock_individual_info_em(symbol=code)
+        for _, row in df.iterrows():
+            if row["item"] == "总市值":
+                return _safe_float(row["value"]) / 1e8
+    except Exception:
+        pass
+    return float("nan")
 
 
 @register("master_filter")
@@ -80,30 +114,24 @@ class MasterFilter:
                 details={self.name: {"skip": "ETF不做基本面筛选"}},
             )
 
-        info = _get_fundamentals(stock.code)
-        if not info:
-            return FilterResult(
-                stock=stock,
-                failed_filters=[self.name],
-                details={self.name: {"error": "无法获取基本面数据"}},
-            )
+        valuation = _get_valuation(stock.code)
+        financials = _get_financials(stock.code)
+        market_cap_yi = _get_market_cap(stock.code)
 
-        pe = _safe_float(info.get("市盈率(动态)"))
-        pb = _safe_float(info.get("市净率"))
-        roe = _safe_float(info.get("净资产收益率"))
-        debt = _safe_float(info.get("资产负债率"))
-        rev_growth = _safe_float(info.get("营业收入同比增长率"))
-        cap_raw = info.get("总市值", "0")
-        market_cap_yi = _safe_float(cap_raw) / 1e8
+        pe = valuation.get("pe", float("nan"))
+        pb = valuation.get("pb", float("nan"))
+        roe = financials.get("roe", float("nan"))
+        debt = financials.get("debt_ratio", float("nan"))
+        rev_growth = financials.get("revenue_growth", float("nan"))
 
         checks: dict[str, bool] = {}
         details: dict = {
             "pe": pe, "pb": pb, "roe": roe,
             "debt_ratio": debt, "revenue_growth": rev_growth,
-            "market_cap_yi": round(market_cap_yi, 1),
+            "market_cap_yi": round(market_cap_yi, 1) if not math.isnan(market_cap_yi) else "N/A",
+            "report_period": financials.get("report_period", "N/A"),
         }
 
-        import math
         has_pe = not math.isnan(pe)
         has_pb = not math.isnan(pb)
         has_roe = not math.isnan(roe)
@@ -116,7 +144,7 @@ class MasterFilter:
         checks["profitability"] = has_roe and roe > self.th["roe_min"]
         checks["financial_health"] = has_debt and debt < self.th["debt_ratio_max"]
         checks["growth"] = not math.isnan(rev_growth) and rev_growth > self.th["revenue_growth_min"]
-        checks["leader"] = market_cap_yi >= self.th["market_cap_min_yi"]
+        checks["leader"] = not math.isnan(market_cap_yi) and market_cap_yi >= self.th["market_cap_min_yi"]
 
         core_pass = checks["profitability"] and checks["valuation"] and checks["financial_health"]
         bonus = checks["growth"] or checks["leader"]
