@@ -139,24 +139,32 @@ def _usa_fed_rate_by_month_and_year() -> tuple[list[dict], list[dict]]:
         return [], []
 
 
-def _usa_bond_yield_by_month_and_year() -> tuple[list[dict], list[dict]]:
-    """美国10年期国债收益率：按日频聚合为月度（当年）、年份（有数据的最近30年）。"""
+# bond_zh_us_rate 列索引：0=日期，8=美国2Y，9=美国5Y，10=美国10Y
+_BOND_TENORS = [(8, "美国2年期国债收益率"), (9, "美国5年期国债收益率"), (10, "美国10年期国债收益率")]
+
+
+def _usa_bond_yields_by_month_and_year() -> dict[str, tuple[list[dict], list[dict]]]:
+    """美债 2Y/5Y/10Y 按日频聚合为月度（最近12月）、年份（近30年）。返回 {指标名: (by_month, by_year)}。"""
     try:
         import akshare as ak
         start = f"{datetime.now().year - 31}0101"
         df = ak.bond_zh_us_rate(start_date=start)
         if df is None or df.empty or len(df.columns) < 11:
-            return [], []
-        rows = []
-        for _, row in df.iterrows():
-            date_val = str(row.iloc[0])[:10]
-            val_10y = row.iloc[10]
-            if val_10y is not None and (not isinstance(val_10y, float) or val_10y == val_10y):
-                rows.append({"date": date_val, "value": round(float(val_10y), 2)})
-        return _group_by_month_and_year(rows)
+            return {}
+        out = {}
+        for col_idx, name in _BOND_TENORS:
+            rows = []
+            for _, row in df.iterrows():
+                date_val = str(row.iloc[0])[:10]
+                val = row.iloc[col_idx]
+                if val is not None and (not isinstance(val, float) or val == val):
+                    rows.append({"date": date_val, "value": round(float(val), 2)})
+            if rows:
+                out[name] = _group_by_month_and_year(rows)
+        return out
     except Exception as e:
         logger.warning("拉取美债收益率序列失败: %s", e)
-        return [], []
+        return {}
 
 
 def _dollar_index() -> dict | None:
@@ -228,14 +236,14 @@ def fetch_macro_snapshot() -> dict:
 
 
 def fetch_macro_report() -> dict:
-    """拉取宏观数据，按月度（当年）、年份（近30年）聚合。返回 {指标名: {"by_month": [...], "by_year": [...]}}。"""
+    """拉取宏观数据，按月度（最近12月）、年份（近30年）聚合。返回 {指标名: {"by_month": [...], "by_year": [...]}}。"""
     report = {}
     fed_m, fed_y = _usa_fed_rate_by_month_and_year()
     if fed_m or fed_y:
         report["美国联邦基金利率(美联储)"] = {"by_month": fed_m, "by_year": fed_y}
-    bond_m, bond_y = _usa_bond_yield_by_month_and_year()
-    if bond_m or bond_y:
-        report["美国10年期国债收益率"] = {"by_month": bond_m, "by_year": bond_y}
+    for name, (bond_m, bond_y) in _usa_bond_yields_by_month_and_year().items():
+        if bond_m or bond_y:
+            report[name] = {"by_month": bond_m, "by_year": bond_y}
     return report
 
 
@@ -288,7 +296,7 @@ def _svg_line_chart(rows: list[dict], width: int = 520, height: int = 200) -> st
 
 
 def build_macro_report_html(report: dict) -> str:
-    """将 report 转为 HTML：按月度（最近12月）、年份（近30年）表+折线图。"""
+    """将 report 转为 HTML：同类型一行，表格与折线图左右并排。"""
     unit_suffix = " %"
     parts = []
     for name, data in report.items():
@@ -297,32 +305,36 @@ def build_macro_report_html(report: dict) -> str:
         unit = unit_suffix if ("利率" in name or "收益" in name) else ""
         by_month = data.get("by_month") or []
         by_year = data.get("by_year") or []
+        block = [f"<h3>{name}</h3>"]
         if by_month:
             trs = "".join(
                 f"<tr><td>{r['period']}</td><td>{r['value']}{unit}</td></tr>"
                 for r in by_month
             )
-            parts.append(
-                f"<h3>{name} · 月度（最近12个月）</h3>"
+            tbl = (
                 f"<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">"
                 f"<tr><th>月份</th><th>数值</th></tr>{trs}</table>"
             )
             svg = _svg_line_chart(by_month)
-            if svg:
-                parts.append(f"<p>{svg}</p>")
+            block.append(
+                '<div style="display:flex; gap:1em; align-items:flex-start; margin-bottom:1em;">'
+                f'<div>{tbl}</div><div>{svg or ""}</div></div>'
+            )
         if by_year:
             trs = "".join(
                 f"<tr><td>{r['period']}年</td><td>{r['value']}{unit}</td></tr>"
                 for r in by_year
             )
-            parts.append(
-                f"<h3>{name} · 年份（近30年）</h3>"
+            tbl = (
                 f"<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">"
                 f"<tr><th>年份</th><th>数值</th></tr>{trs}</table>"
             )
             svg = _svg_line_chart(by_year)
-            if svg:
-                parts.append(f"<p>{svg}</p>")
+            block.append(
+                '<div style="display:flex; gap:1em; align-items:flex-start;">'
+                f'<div>{tbl}</div><div>{svg or ""}</div></div>'
+            )
+        parts.append("".join(block))
     if not parts:
         return "<p>暂无宏观数据。</p>"
     body = (

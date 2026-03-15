@@ -123,6 +123,9 @@ trading:
   initial_capital: 100000
   capital_ratio_news: 0.5
   capital_ratio_research_pool: 0.5
+  # 建议买卖价（链式筛选通过后计算，并推送到通知）
+  suggested_buy_offset_pct: -0.01   # 建议买入价 = 现价*(1+offset)，-0.01 表示略低于现价 1%
+  # 建议卖出价（止盈目标）= 现价*(1+stop_profit_pct)，与下面止盈比例一致
   # 止盈止损（持仓检查时使用）
   stop_profit_pct: 0.10    # 单票盈利达到 10% 止盈
   stop_loss_pct: -0.05     # 单票亏损达到 5% 止损
@@ -158,14 +161,22 @@ notification:
     enabled: false
     token: "${PUSHPLUS_TOKEN:}"
 
+# 宏观信息模块：中美主要经济指标，独立于交易流水线
+macro:
+  enabled: true
+  notify_email: true        # 拉取后是否发邮件：按月度（当年）、年份（近30年）表格，使用 notification.email
+
 # 定时器配置
-# 定时调度：默认双路线（新闻+自研池）每天 8:00-01:00 每小时一次
+# 定时调度：默认双路线（新闻+自研池）每天 8:00-01:00 每小时一次；宏观 8:00/15:00/21:00 各一次
 scheduler:
   enabled: true
   jobs:
     - name: "both_routes"
       cron: "0 0,1,8-23 * * *"
       run_both: true
+    - name: "macro_daily"
+      cron: "0 8 * * *"
+      macro: true   # 每天 8:00 执行 1 次
 
 # 日志配置
 logging:
