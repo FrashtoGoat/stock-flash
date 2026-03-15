@@ -19,6 +19,21 @@ from src.models.stock import MarketCondition, TradeSignal
 logger = logging.getLogger(__name__)
 
 
+def _confidence_and_conditions(signal: TradeSignal, source: str) -> str:
+    """返回信心说明与满足条件：为何是该百分比、原因里通过了哪些环节。"""
+    pct = round(signal.confidence * 100)
+    reason = signal.reason or ""
+    if source == "自研池" and "通过链式筛选:" in reason:
+        # 自研池：信心 = 基础 50% + 每过一环 +7%，上限 95%
+        part = reason.split("通过链式筛选:")[-1].strip()
+        conditions = [x.strip() for x in part.split(",") if x.strip()]
+        n = len(conditions)
+        expl = f"{pct}%：共{n}环全部通过（{', '.join(conditions)}），基础50%+每环7%。满足条件：{', '.join(conditions)}。"
+        return expl
+    # 新闻驱动或其它：信心来自 LLM 综合评分
+    return f"{pct}%：来自 LLM 对新闻与标的的综合评分。原因：{reason[:80]}{'…' if len(reason) > 80 else ''}"
+
+
 def _build_short_text(
     market: MarketCondition,
     signals: list[TradeSignal],
@@ -32,9 +47,19 @@ def _build_short_text(
         "",
     ]
     if signals:
-        lines.append(f"【信号】{len(signals)} 个")
-        for s in signals[:10]:
-            lines.append(f"  {s.stock.name}({s.stock.code}) 买入 {s.amount:.0f} 元 | {s.reason[:40]}")
+        sells = [s for s in signals if s.direction.value == "sell"]
+        buys = [s for s in signals if s.direction.value == "buy"]
+        if sells:
+            lines.append(f"【卖出信号】{len(sells)} 个（止盈/止损触发，请关注）")
+            for s in sells[:5]:
+                lines.append(f"  {s.stock.name}({s.stock.code}) 卖出 | {s.reason or ''}")
+            if buys:
+                lines.append("")
+        if buys:
+            lines.append(f"【买入信号】{len(buys)} 个")
+            for s in buys[:10]:
+                expl = _confidence_and_conditions(s, source)
+                lines.append(f"  {s.stock.name}({s.stock.code}) 买入 {s.amount:.0f} 元 | {expl}")
     else:
         lines.append("【信号】本次无交易信号")
     return "\n".join(lines)
@@ -51,26 +76,45 @@ _EMAIL_TEMPLATE = """\
 </p>
 {% if market.reason %}<p>备注: {{ market.reason }}</p>{% endif %}
 
-{% if signals %}
-<h3>交易信号 ({{ signals|length }}个)</h3>
+{% if sell_signals %}
+<h3>⚠️ 卖出信号 ({{ sell_signals|length }}个) — 止盈/止损触发，请关注</h3>
 <table border="1" cellpadding="6" cellspacing="0">
-<tr><th>代码</th><th>名称</th><th>方向</th><th>金额</th><th>信心</th><th>原因</th></tr>
-{% for s in signals %}
+<tr><th>代码</th><th>名称</th><th>方向</th><th>金额</th><th>原因</th></tr>
+{% for s in sell_signals %}
 <tr>
   <td>{{ s.stock.code }}</td>
   <td>{{ s.stock.name }}</td>
-  <td>{{ s.direction.value }}</td>
+  <td>卖出</td>
   <td>{{ "%.0f"|format(s.amount) }}</td>
-  <td>{{ "%.0f"|format(s.confidence * 100) }}%</td>
   <td>{{ s.reason }}</td>
 </tr>
 {% endfor %}
 </table>
-{% else %}
+{% endif %}
+
+{% if buy_signals %}
+<h3>买入信号 ({{ buy_signals|length }}个)</h3>
+<table border="1" cellpadding="6" cellspacing="0">
+<tr><th>代码</th><th>名称</th><th>方向</th><th>金额</th><th>信心</th><th>原因</th><th>信心说明与满足条件</th></tr>
+{% for s in buy_signals %}
+<tr>
+  <td>{{ s.stock.code }}</td>
+  <td>{{ s.stock.name }}</td>
+  <td>买入</td>
+  <td>{{ "%.0f"|format(s.amount) }}</td>
+  <td>{{ "%.0f"|format(s.confidence * 100) }}%</td>
+  <td>{{ s.reason }}</td>
+  <td>{{ confidence_explanations[loop.index0] }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endif %}
+
+{% if not sell_signals and not buy_signals %}
 <p>本次扫描无交易信号。</p>
 {% endif %}
 
-<hr><small>Stock Flash 自动生成 · 仅供参考</small>
+<hr><small>Stock Flash 自动生成 · 仅供参考 · 满足卖出条件时同样会通知</small>
 </body></html>
 """
 
@@ -80,7 +124,7 @@ async def send_email_notification(
     signals: list[TradeSignal],
     source: str = "新闻驱动",
 ) -> bool:
-    """发送邮件通知"""
+    """发送邮件通知。含买入与卖出信号；买入信号附带信心说明与满足条件。"""
     cfg = get("notification", "email") or {}
     if not cfg.get("enabled", False):
         logger.info("邮件通知未启用")
@@ -97,11 +141,28 @@ async def send_email_notification(
         logger.warning("邮件配置不完整，跳过发送")
         return False
 
-    tpl = Template(_EMAIL_TEMPLATE)
-    html = tpl.render(market=market, signals=signals, source=source)
+    sell_signals = [s for s in signals if s.direction.value == "sell"]
+    buy_signals = [s for s in signals if s.direction.value == "buy"]
+    confidence_explanations = [_confidence_and_conditions(s, source) for s in buy_signals]
 
+    tpl = Template(_EMAIL_TEMPLATE)
+    html = tpl.render(
+        market=market,
+        source=source,
+        sell_signals=sell_signals,
+        buy_signals=buy_signals,
+        confidence_explanations=confidence_explanations,
+    )
+
+    subject_parts = [f"Stock Flash [{source}]", market.index_name, f"{market.change_pct:+.2f}%"]
+    if sell_signals:
+        subject_parts.append(f"| {len(sell_signals)} 个卖出信号(止盈/止损)")
+    if buy_signals:
+        subject_parts.append(f"| {len(buy_signals)} 个买入信号")
+    if not signals:
+        subject_parts.append("| 无信号")
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = Header(f"Stock Flash [{source}]: {market.index_name} {market.change_pct:+.2f}% | {len(signals)} 个信号", "utf-8")
+    msg["Subject"] = Header(" ".join(subject_parts), "utf-8")
     if sender_name:
         msg["From"] = formataddr((str(Header(sender_name, "utf-8")), sender))
     else:

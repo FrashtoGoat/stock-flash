@@ -8,9 +8,15 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from src.config import get
-from src.main import pipeline
+from src.main import pipeline, pipeline_research_pool
 
 logger = logging.getLogger(__name__)
+
+
+async def _run_both_routes() -> None:
+    """先跑新闻驱动，再跑自研池，互不干扰（便于持续观察两条路线）。"""
+    await pipeline()
+    await pipeline_research_pool()
 
 
 def _parse_cron(expr: str) -> dict:
@@ -52,17 +58,19 @@ def create_scheduler() -> AsyncIOScheduler:
         cron_expr = job.get("cron", "")
         if not cron_expr:
             continue
+        run_both = job.get("run_both", False)
+        fn = _run_both_routes if run_both else pipeline
 
         try:
             cron_params = _parse_cron(cron_expr)
             scheduler.add_job(
-                pipeline,
+                fn,
                 trigger=CronTrigger(**cron_params, timezone="Asia/Shanghai"),
                 id=name,
                 name=name,
                 replace_existing=True,
             )
-            logger.info("定时任务已添加: %s -> %s", name, cron_expr)
+            logger.info("定时任务已添加: %s -> %s (%s)", name, cron_expr, "双路线" if run_both else "新闻驱动")
         except Exception:
             logger.exception("添加定时任务失败: %s", name)
 

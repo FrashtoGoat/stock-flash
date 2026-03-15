@@ -62,6 +62,17 @@ def _run_test_ctp(test_order: bool = False) -> None:
 
 
 def _setup_logging() -> None:
+    # Windows 控制台：设为 UTF-8，避免日志中文乱码
+    if sys.platform == "win32" and hasattr(sys.stdout, "isatty") and sys.stdout.isatty():
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            kernel32.SetConsoleOutputCP(65001)
+            if hasattr(sys.stdout, "reconfigure"):
+                sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
     cfg = load_config()
     log_cfg = cfg.get("logging", {})
     level = getattr(logging, log_cfg.get("level", "INFO").upper(), logging.INFO)
@@ -70,11 +81,22 @@ def _setup_logging() -> None:
     log_path = Path(log_file)
     log_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # 控制台输出使用 UTF-8，与上面 SetConsoleOutputCP(65001) 配合
+    stream = sys.stdout
+    if hasattr(stream, "reconfigure") and (not getattr(stream, "encoding", None) or getattr(stream, "encoding", "").upper() != "UTF-8"):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    console_handler = logging.StreamHandler(stream)
+    console_handler.setLevel(level)
+    console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s - %(message)s"))
+
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
         handlers=[
-            logging.StreamHandler(sys.stdout),
+            console_handler,
             logging.FileHandler(log_path, encoding="utf-8"),
         ],
     )
@@ -104,6 +126,10 @@ def main() -> None:
         logger.info("回测结果: 总盈亏=%.2f 元 (%.2f%%) | 最大回撤=%.2f%% | 交易次数=%d | 盈利卖出=%d",
                     result["total_pnl"], result["total_pnl_pct"], result["max_drawdown_pct"],
                     result["trades_count"], result["win_count"])
+        for route_name, route_result in result.get("by_route", {}).items():
+            logger.info("  [%s] 盈亏=%.2f 元 (%.2f%%) | 回撤=%.2f%% | 笔数=%d | 盈利卖出=%d",
+                        route_name, route_result["total_pnl"], route_result["total_pnl_pct"],
+                        route_result["max_drawdown_pct"], route_result["trades_count"], route_result["win_count"])
     elif args.review:
         logger.info("运行复盘（新闻-交易关联，近 %d 天）...", args.review_days)
         from src.review import run_review
@@ -131,15 +157,23 @@ def main() -> None:
         run_once_test()
     elif args.schedule:
         logger.info("启动定时调度模式...")
-        from src.scheduler import create_scheduler
-        scheduler = create_scheduler()
-        scheduler.start()
-        logger.info("定时调度器已启动，按 Ctrl+C 停止")
+
+        async def _run_schedule():
+            from src.scheduler import create_scheduler
+            sched = create_scheduler()
+            sched.start()
+            logger.info("定时调度器已启动，按 Ctrl+C 停止")
+            try:
+                while True:
+                    await asyncio.sleep(3600)
+            finally:
+                sched.shutdown()
+                logger.info("调度器已停止")
+
         try:
-            asyncio.get_event_loop().run_forever()
+            asyncio.run(_run_schedule())
         except (KeyboardInterrupt, SystemExit):
-            scheduler.shutdown()
-            logger.info("调度器已停止")
+            pass
     elif args.research_pool:
         logger.info("执行自研池流水线（链式筛选起，来源: 自研池）...")
         from src.main import run_once_research_pool

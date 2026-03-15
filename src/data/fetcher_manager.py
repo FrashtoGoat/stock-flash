@@ -77,7 +77,17 @@ def get_kline(code: str, period: str = "daily", count: int = 120) -> pd.DataFram
     result = _try_sources([
         ("akshare_hist", lambda **kw: _akshare_hist(**kw)),
     ])
-    return result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+    df = result if isinstance(result, pd.DataFrame) else pd.DataFrame()
+    if not df.empty and "日期" in df.columns and "收盘" in df.columns:
+        last_date = str(df["日期"].iloc[-1])
+        last_close = float(df["收盘"].iloc[-1])
+        logger.info("行情[日线] %s 条数=%d 最新日期=%s 最新收盘=%.2f 获取成功",
+                    code, len(df), last_date, last_close)
+    elif not df.empty:
+        logger.info("行情[日线] %s 条数=%d 获取成功（无日期/收盘列）", code, len(df))
+    else:
+        logger.warning("行情[日线] %s 获取失败或无数据", code)
+    return df
 
 
 def get_realtime_quote(code: str) -> dict:
@@ -111,7 +121,13 @@ def get_realtime_quote(code: str) -> dict:
         ("akshare_bid_ask", lambda **kw: _akshare_quote(**kw)),
         ("akshare_spot", lambda **kw: _akshare_indicator(**kw)),
     ])
-    return result if isinstance(result, dict) else {}
+    out = result if isinstance(result, dict) else {}
+    price = out.get("最新") if isinstance(out.get("最新"), (int, float)) else None
+    if price is not None:
+        logger.info("行情[实时] %s 最新价=%.2f 获取成功", code, price)
+    else:
+        logger.warning("行情[实时] %s 最新价获取失败", code)
+    return out
 
 
 def get_chip_distribution(code: str) -> dict:

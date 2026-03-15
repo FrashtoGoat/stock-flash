@@ -1,12 +1,9 @@
 # Stock Flash 全局配置
 
-# 自研池（与新闻驱动并列的另一条路线：从本列表出发跑链式筛选，不入新闻池，通知/交易会标明来源「自研池」）
+# 自研池（与新闻驱动并列的另一条路线：从独立文件列表出发跑链式筛选，不入新闻池，通知/交易会标明来源「自研池」）
 research_pool:
-  enabled: false
-  stocks:
-    - { code: "600000", name: "浦发银行" }
-    - { code: "000001", name: "平安银行" }
-  # 可继续追加 code/name，链式筛选通过后才发信号
+  enabled: true
+  file: "research_pool.yaml"   # 标的列表放在 config/research_pool.yaml，此处只开关与文件名
 
 # 新闻源配置
 news:
@@ -117,6 +114,15 @@ trading:
   max_position_pct: 10
   max_total_positions: 5
   default_amount: 10000
+  # 买入金额：按评分缩放，不低于 min_buy_amount（覆盖手续费+滑点后不亏）
+  # 公式：金额 = clamp(default_amount * (0.5+0.5*score/100), min_buy_amount, max_amount_per_trade)，不 all-in
+  min_buy_amount: 3500      # 约 2*5 元佣金 + 0.2% 滑点，需约 0.5% 波动覆盖，故不低于约 3500
+  max_amount_per_trade: 50000  # 单笔上限，避免 all-in
+  score_based_amount: true  # true 时按评分缩放金额
+  # 回测用：初始资金分两份，每条路线一份（回测时按 source 分账）
+  initial_capital: 100000
+  capital_ratio_news: 0.5
+  capital_ratio_research_pool: 0.5
   # 止盈止损（持仓检查时使用）
   stop_profit_pct: 0.10    # 单票盈利达到 10% 止盈
   stop_loss_pct: -0.05     # 单票亏损达到 5% 止损
@@ -153,15 +159,13 @@ notification:
     token: "${PUSHPLUS_TOKEN:}"
 
 # 定时器配置
+# 定时调度：默认双路线（新闻+自研池）每天 8:00-01:00 每小时一次
 scheduler:
   enabled: true
   jobs:
-    - name: "morning_scan"
-      cron: "30 9 * * 1-5"
-    - name: "afternoon_scan"
-      cron: "0 13 * * 1-5"
-    - name: "news_monitor"
-      cron: "*/5 9-15 * * 1-5"
+    - name: "both_routes"
+      cron: "0 0,1,8-23 * * *"
+      run_both: true
 
 # 日志配置
 logging:

@@ -33,8 +33,8 @@ def _fetch_index_realtime(index_code: str) -> dict:
             "volume_ratio": float(r.get("量比", 1)) if "量比" in r.index else 1.0,
             "data_date": None,
         }
-    except Exception:
-        logger.exception("获取指数 %s 实时数据失败", index_code)
+    except Exception as e:
+        logger.debug("获取指数 %s 实时数据失败（将回退最近交易日）: %s", index_code, e)
         return {}
 
 
@@ -58,8 +58,8 @@ def _fetch_index_latest_trading_day(index_code: str) -> dict:
             "volume_ratio": 1.0,
             "data_date": data_date,
         }
-    except Exception:
-        logger.exception("获取指数 %s 最近交易日数据失败", index_code)
+    except Exception as e:
+        logger.warning("获取指数 %s 最近交易日数据失败: %s", index_code, e)
         return {}
 
 

@@ -40,6 +40,18 @@ logger = logging.getLogger(__name__)
 _dedup = DedupStore()
 
 
+def _buy_amount_from_score(score_0_100: float, trading_cfg: dict) -> float:
+    """按评分计算买入金额：不低于 min_buy_amount，不超过 max_amount_per_trade，不 all-in。"""
+    default_amount = trading_cfg.get("default_amount", 10000)
+    min_amt = trading_cfg.get("min_buy_amount", 3500)
+    max_amt = trading_cfg.get("max_amount_per_trade", 50000)
+    if not trading_cfg.get("score_based_amount", True):
+        return max(min_amt, min(default_amount, max_amt))
+    # 0.5 + 0.5 * score/100，评分高多买
+    raw = default_amount * (0.5 + 0.5 * max(0, min(100, score_0_100)) / 100)
+    return max(min_amt, min(max_amt, round(raw, 0)))
+
+
 def _get_test_oil_news() -> list[NewsItem]:
     """测试用：石油主题新闻，用于 --test 跑通全流程"""
     now = datetime.now()
@@ -165,12 +177,11 @@ async def pipeline_test() -> None:
     market = await judge_market()
 
     trading_cfg = get("trading") or {}
-    default_amount = trading_cfg.get("default_amount", 10000)
     signals = [
         TradeSignal(
             stock=r.stock,
             direction=TradeDirection.BUY,
-            amount=default_amount,
+            amount=_buy_amount_from_score(r.stock.score, trading_cfg),
             reason=r.stock.reason,
             confidence=r.stock.score / 100,
         )
@@ -336,12 +347,11 @@ async def pipeline() -> None:
 
     # 构建交易信号
     trading_cfg = get("trading") or {}
-    default_amount = trading_cfg.get("default_amount", 10000)
     signals = [
         TradeSignal(
             stock=r.stock,
             direction=TradeDirection.BUY,
-            amount=default_amount,
+            amount=_buy_amount_from_score(r.stock.score, trading_cfg),
             reason=r.stock.reason,
             confidence=r.stock.score / 100,
         )
@@ -352,8 +362,11 @@ async def pipeline() -> None:
     logger.info("[Step 7] 发送通知...")
     await notify(market, signals, source="新闻驱动")
 
-    # Step 8: 交易执行
-    if market.is_tradable:
+    # Step 8: 交易执行（非交易时段/非交易日不执行，即使用最近交易日数据判为可交易也不下单）
+    no_trade_reason = skip_reason(datetime.now())
+    if no_trade_reason:
+        logger.warning("[Step 8] %s，不执行交易", no_trade_reason)
+    elif market.is_tradable:
         logger.info("[Step 8] 执行交易 (大盘可交易)...")
         executor = create_executor()
         records, trade_ids = await executor.execute(signals, source="新闻驱动")
@@ -364,14 +377,17 @@ async def pipeline() -> None:
     else:
         logger.warning("[Step 8] 大盘不宜交易，跳过执行: %s", market.reason)
 
-    # 止盈止损检查：若有卖出信号则通知并执行（模拟/实盘）
+    # 止盈止损检查：若有卖出信号则通知并执行（模拟/实盘）；非交易时段不执行
     from src.trading.position_manager import check_stop_profit_loss
     sell_signals = check_stop_profit_loss()
     if sell_signals:
         logger.info("[止盈止损] 产生 %d 个卖出信号", len(sell_signals))
         await notify(market, sell_signals, source="新闻驱动")
-        executor = create_executor()
-        _, _ = await executor.execute(sell_signals, source="新闻驱动")
+        if not no_trade_reason:
+            executor = create_executor()
+            _, _ = await executor.execute(sell_signals, source="新闻驱动")
+        else:
+            logger.warning("[止盈止损] %s，不执行卖出", no_trade_reason)
         if use_stock_pool:
             from src.db.stock_pool_repository import mark_removed
             codes = [s.stock.code for s in sell_signals]
@@ -387,11 +403,24 @@ async def pipeline() -> None:
 
 
 def load_research_pool() -> list[StockTarget]:
-    """从配置加载自研池标的（与新闻驱动并列的另一条路线）。"""
+    """从配置加载自研池标的。优先从 config/<research_pool.file> 读取列表，否则用 settings 内 research_pool.stocks。"""
     cfg = get("research_pool") or {}
     if not cfg.get("enabled", False):
         return []
-    stocks = cfg.get("stocks") or []
+    stocks: list[dict] = []
+    file_name = (cfg.get("file") or "").strip()
+    if file_name:
+        pool_path = Path(__file__).resolve().parent.parent / "config" / file_name
+        if pool_path.exists():
+            import yaml
+            with open(pool_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            stocks = data.get("stocks") or []
+        else:
+            logger.warning("自研池文件不存在: %s，使用 settings 内 stocks", pool_path)
+            stocks = cfg.get("stocks") or []
+    else:
+        stocks = cfg.get("stocks") or []
     return [
         StockTarget(
             code=str(s.get("code", "")).strip(),
@@ -430,22 +459,34 @@ async def pipeline_research_pool() -> None:
     market = await judge_market()
 
     trading_cfg = get("trading") or {}
-    default_amount = trading_cfg.get("default_amount", 10000)
-    signals = [
-        TradeSignal(
+    # 信心与原因均来自链式筛选结果：信心 = 基础 0.5 + 每通过一环 +0.07 上限 0.95；原因 = 通过的筛选环节
+    _filter_display = {
+        "board_filter": "板块", "affordability_filter": "可买", "anomaly_filter": "异动",
+        "master_filter": "基本面", "institution_filter": "机构", "technical_filter": "技术",
+    }
+    signals = []
+    for r in passed:
+        n = len(r.passed_filters)
+        confidence = min(0.95, 0.5 + 0.07 * n)
+        reason_chain = ", ".join(_filter_display.get(p, p) for p in r.passed_filters)
+        reason = f"自研池 | 通过链式筛选: {reason_chain}"
+        score_0_100 = confidence * 100
+        signals.append(TradeSignal(
             stock=r.stock,
             direction=TradeDirection.BUY,
-            amount=default_amount,
-            reason=r.stock.reason,
-            confidence=r.stock.score / 100,
-        )
-        for r in passed
-    ]
+            amount=_buy_amount_from_score(score_0_100, trading_cfg),
+            reason=reason,
+            confidence=confidence,
+        ))
 
     logger.info("[自研池] 发送通知 (来源: 自研池)...")
     await notify(market, signals, source="自研池")
 
-    if market.is_tradable:
+    # 非交易时段/非交易日不执行交易（即使用最近交易日数据判断为可交易也不下单）
+    no_trade_reason = skip_reason(datetime.now())
+    if no_trade_reason:
+        logger.warning("[自研池] %s，不执行交易", no_trade_reason)
+    elif market.is_tradable:
         logger.info("[自研池] 执行交易 (大盘可交易)...")
         executor = create_executor()
         records, trade_ids = await executor.execute(signals, source="自研池")

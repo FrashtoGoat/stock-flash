@@ -1,0 +1,5 @@
+# 自研池股票列表（与新闻驱动并列的另一条路线）
+# 仅在此文件维护标的，settings.yaml 中 research_pool.enabled / research_pool.file 控制是否启用及本文件路径
+stocks:
+  - { code: "002130", name: "沃尔核材" }
+  - { code: "002463", name: "沪电股份" }
