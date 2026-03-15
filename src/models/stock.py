@@ -176,3 +176,4 @@ class TradeRecord(BaseModel):
     exec_time: Optional[datetime] = None
     status: str = "pending"
     message: str = ""
+    source: Optional[str] = None  # 信号来源：新闻驱动 / 自研池，用于区分两条路线

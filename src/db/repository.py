@@ -13,14 +13,15 @@ from src.models.stock import TradeRecord
 logger = logging.getLogger(__name__)
 
 
-def save_trade_records(records: list[TradeRecord]) -> bool:
-    """将 TradeRecord 列表写入数据库；未启用存储时返回 False"""
+def save_trade_records(records: list[TradeRecord]) -> list[int]:
+    """将 TradeRecord 列表写入数据库；返回新插入的 trade id 列表，未启用存储时返回 []。"""
     if not records:
-        return True
+        return []
     init_db()
     session = get_session()
     if session is None:
-        return False
+        return []
+    rows: list[Trade] = []
     try:
         for r in records:
             sig = r.signal
@@ -36,13 +37,16 @@ def save_trade_records(records: list[TradeRecord]) -> bool:
                 signal_snapshot=json.dumps(r.model_dump(mode="json"), ensure_ascii=False),
             )
             session.add(row)
+            rows.append(row)
+        session.flush()
+        ids = [row.id for row in rows]
         session.commit()
         logger.info("交易记录已写入数据库: %d 条", len(records))
-        return True
+        return ids
     except Exception:
         logger.exception("写入交易记录失败")
         session.rollback()
-        return False
+        return []
     finally:
         session.close()
 
@@ -67,6 +71,20 @@ def list_trades(
         if since:
             q = q.filter(Trade.exec_time >= since)
         return q.limit(limit).all()
+    finally:
+        session.close()
+
+
+def get_trades_by_ids(trade_ids: list[int]) -> list[Trade]:
+    """按 id 列表查询交易记录（用于复盘关联新闻）"""
+    if not trade_ids:
+        return []
+    init_db()
+    session = get_session()
+    if session is None:
+        return []
+    try:
+        return session.query(Trade).filter(Trade.id.in_(trade_ids)).all()
     finally:
         session.close()
 

@@ -22,7 +22,7 @@
       ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ Step 1  拉取新闻 (新浪 + 东方财富)                                        │
-│ Step 2  去重 (news_id 文件持久化，24h 过期)                               │
+│ Step 2  去重 (新闻库 DB 或文件 news_id，超时标 expired 生命周期)          │
 │ Step 3  预处理 → 分类/情绪/关键词 → 预筛选                               │
 │ Step 4  LLM 分析 (利好 + 利空 并行) → 标的 + 大盘/行业利空                 │
 │ Step 5  链式筛选 (板块→可买→异动→基本面→机构→技术)                       │
@@ -31,6 +31,30 @@
 │ Step 8  交易执行 (模拟/模拟盘/CTP：result/trades/日期/ + DB；实盘：占位未实现)  │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+- **流程状态**：Step 1～8 已全部实现（新闻库、复盘 `--review`、止盈止损、模拟/模拟盘/CTP 均可用），仅**实盘 (live)** 为占位未实现。非交易日/非交易时段仍会跑完 Step 1～7（拉取、筛选、入池等），仅 Step 8 不执行交易。
+- **两条路线**：**新闻驱动**（默认 `python run.py`）：拉取→去重→预处理→LLM→链式筛选→通知→交易，通过筛选的标的入股票池；**自研池**（`python run.py --research-pool`）：从 `config/settings.yaml` 的 `research_pool.stocks` 出发，只跑链式筛选→大盘判断→通知→交易，不入新闻池。通知与交易记录均会**标明来源**（新闻驱动 / 自研池）。
+
+---
+
+## 股票池（已实现，可选开启）
+
+新闻筛出并通过链式筛选的标的会进入**股票池**，按「观察 → 稳定 → 高位 / 移除」流转，并与新闻生命周期联动。
+
+| 池子     | 含义 |
+|----------|------|
+| **观察池** | 刚入池，观察一段时间 |
+| **稳定池** | 观察满 N 小时且涨跌幅在稳定区间，可作买入候选 |
+| **高位池** | 5 日涨幅超阈值，只持有不新开仓 |
+| **移除池** | 新闻过期、止盈/止损卖出、或观察超时 |
+
+**如何维护（以代码和配置为准）**：
+
+- **改流转规则 / 阈值**：改 `config/settings.yaml` 里 `stock_pool` 下的 `stable_watch_hours`、`stable_min_1d_pct`、`high_threshold_5d_pct` 等；逻辑在 `src/trading/stock_pool_maintainer.py` 的 `maintain()`。
+- **改入池/出池逻辑**：改 `src/db/stock_pool_repository.py`（入池、标移除）和 `maintainer`（观察→稳定→高位→移除）。
+- **改表结构**：改 `src/db/models.py` 的 `StockPool`，必要时重建或迁移 DB。
+
+**开启方式**：`config/settings.yaml` 中 `stock_pool.enabled: true`，且 `storage.enabled: true`。当前买入信号仍来自当次链式筛选通过标的，未改为「仅稳定池」。
 
 ---
 
@@ -56,8 +80,16 @@ python run.py --test-email
 # 6. 简单回测（近期交易记录 + 日线，算收益与回撤）
 python run.py --backtest
 
-# 7. 测试 OpenCTP 连接与登录（需配置 trading.ctp 或 OPENCTP_USER/OPENCTP_PASSWORD）
+# 6b. 收盘后复盘（新闻-交易关联、按来源统计准确率与建议，需 storage.enabled）
+python run.py --review
+python run.py --review --review-days 7
+
+# 6c. 自研池路线（从 config 的 research_pool.stocks 跑链式筛选→通知→交易，来源标明「自研池」）
+python run.py --research-pool
+
+# 7. 测试 OpenCTP：仅登录 / 登录+一笔测试报单（需配置 trading.ctp）
 python run.py --test-ctp
+python run.py --test-ctp --test-ctp-order   # 登录后发一笔低价限价单（验证报单，不会成交）
 
 # 8. 定时调度
 python run.py --schedule
@@ -98,6 +130,8 @@ python run.py --schedule
 | 止盈止损   | ✅ 已做 | `position_manager` 从 DB 汇总持仓，按 `stop_profit_pct`/`stop_loss_pct`/`hold_days_min` 生成卖出信号，流水线末尾检查并执行。 |
 | 回测模块   | ✅ 已做 | `python run.py --backtest`，从 DB/JSON 读交易记录，akshare 日线模拟，输出总盈亏与最大回撤。 |
 | 模拟盘交易 | ✅ 接口已实现 | `trading.mode: paper` 使用 `PaperExecutor`，当前落 JSON+DB（status=paper），后续在 executor 内接入券商模拟盘 API 即闭环。 |
+| 新闻库与复盘 | ✅ 已做 | 新闻表 pending→processed→analyzed→expired，`--review` 按来源统计准确率与已实现盈亏。 |
+| 股票池 | ✅ 已做 | 观察池/稳定池/高位池/移除池，配置 `stock_pool.enabled` 开启，见上文「股票池」小节。 |
 | 实盘交易   | 暂不实现 | 真实资金下单，模拟盘闭环后再做。 |
 
 **详细实现与配置见 [todolist_skill.md](todolist_skill.md)。**
@@ -108,7 +142,7 @@ python run.py --schedule
 
 **1. 现在能跑通整个流程了吗？**  
 能。在配置好 `.env`（API Key、邮箱等）和 `config/settings.yaml` 后：
-- **`python run.py`**：拉取实时新闻，走完 8 步（若当日无新新闻会在 Step 2 去重后结束，属正常）。
+- **`python run.py`**：拉取实时新闻，走完 8 步（若当日无新新闻会在 Step 2 去重后结束，属正常）。非交易日/非交易时段也会跑完 Step 1～7（拉取、去重、预处理、LLM、链式筛选、大盘判断、通知），通过筛选的标的会入池（若开启股票池），仅 Step 8 不执行交易。
 - **`python run.py --test`**：用内置石油新闻跑通全流程，不依赖实时拉取与去重，适合验证整条链路。
 
 **2. 回测模块是干嘛的？**  
@@ -162,6 +196,33 @@ python run.py --schedule
   - **仿真环境**：交易 `tcp://trading.openctp.cn:30002`（与实盘时段同步，按实盘行情撮合）。
 - **对接到本项目**：在 `PaperExecutor` 内用 OpenCTP 提供的 CTPAPI Python 封装（如 `openctp-ctp-python`）连接上述前置，用你的仿真/7x24 账号、密码登录，将本项目的买卖信号转为 CTP 报单即可。无需安装任何交易客户端。
 - **官网与帮助**：<http://www.openctp.cn>；入金/重置等指令见注册邮件或官网说明。
+
+### CTP 程序跑不起来？常见原因与排查
+
+若 `python run.py --test-ctp` 一直提示「CTP 登录失败」或「登录未就绪」，并出现 **OnSessionDisconnected（如 nReason=4097）**，可按下面逐项排查：
+
+| 可能原因 | 说明与处理 |
+|----------|------------|
+| **网络不可达** | 当前环境（公司网络、代理、防火墙）无法访问 `trading.openctp.cn` 的 30001（7x24）或 30002（仿真）端口。**处理**：在本机用 `telnet trading.openctp.cn 30001` 或浏览器访问 openctp 官网，确认能连通；在可访问外网的本机再跑一次 `python run.py --test-ctp`。 |
+| **连接后被断开（4097）** | OpenCTP 官方说明：**出现 4097 即表示当前用的是标准 CTP 库，未用 TTS 库**。必须使用 **openctp-tts**（TTS 的 CTPAPI），不能用 openctp-ctp。**处理**：`pip uninstall openctp-ctp` 后 `pip install openctp-tts`，本项目已默认依赖 openctp-tts。 |
+| **账号/密码错误** | 仿真与 7x24 账号不同（如 16988 仿真、17572 为 7x24），密码为公众号注册时给的（如 123456）。**处理**：在 config/settings.yaml 的 `trading.ctp` 中填对 `user_id`、`password`；或通过公众号回复「查询」确认账号状态。 |
+| **未激活/未入金** | 部分环境要求先「入金」才能正常使用。**处理**：公众号回复「724账户17572入金1000000」或「仿真账户16988入金1000000」后再试。 |
+| **仿真时段** | 仿真环境与实盘时段一致，非 A 股交易时段可能无法登录或报单。**处理**：非交易时段改用 7x24 环境（`td_url: tcp://trading.openctp.cn:30001`，`user_id: 17572`）。 |
+
+**建议**：先在本机（非代理/非受限网络）执行 `python run.py --test-ctp`；若仍失败，看日志里是否先出现「CTP 交易前置已连接」再断开（则多为 4097/网络），还是从未出现（则多为网络不通）。
+
+### 测试 CTP 模拟交易（登录成功后）
+
+- **只验证报单接口**（不发真实策略信号）：  
+  `python run.py --test-ctp --test-ctp-order`  
+  会登录后向 OpenCTP 发一笔**低价限价单**（浦发银行 600000，0.01 元/股、100 股），远低于市价不会成交，仅验证「报单 → 回报」是否正常；可在 [OpenCTP 模拟环境监控](http://openctp.cn/simenv.html) 或 TickTrader 查看挂单。
+
+- **整条流水线走 CTP**（新闻→分析→筛选→通知→CTP 下单）：  
+  1. 在 **config/settings.yaml** 中把 `trading.mode` 改为 `ctp`。  
+  2. 执行 `python run.py --test`（用内置石油新闻跑通全流程，通过筛选的信号会发给 OpenCTP 报单）。  
+  注意：会按策略信号真实向仿真/7x24 报单，可能挂单或撮合成交，请用模拟账号并控制仓位。
+
+若 `--test-ctp-order` 一直显示「等待报单回报超时」，多为 7x24 当前不在回报时段或合约限制；可改用**仿真环境**（`td_url: tcp://trading.openctp.cn:30002`、`user_id: 16988`）在 A 股交易时段再试，或直接做**整条流水线测试**（`mode: ctp` + `python run.py --test`）验证从信号到报单的完整链路。
 
 ### 对接同花顺模拟炒股：你需要提供什么
 

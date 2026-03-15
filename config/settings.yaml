@@ -1,5 +1,13 @@
 # Stock Flash 全局配置
 
+# 自研池（与新闻驱动并列的另一条路线：从本列表出发跑链式筛选，不入新闻池，通知/交易会标明来源「自研池」）
+research_pool:
+  enabled: false
+  stocks:
+    - { code: "600000", name: "浦发银行" }
+    - { code: "000001", name: "平安银行" }
+  # 可继续追加 code/name，链式筛选通过后才发信号
+
 # 新闻源配置
 news:
   jin10:
@@ -82,9 +90,23 @@ market:
     - "sz399001"
     - "sz399006"
 
-# 存储配置（数据库，用于交易记录 / 止盈止损 / 回测）
+# 股票池（观察/稳定/高位/移除），需 storage.enabled
+stock_pool:
+  enabled: false
+  stable_watch_hours: 24
+  watch_max_hours: 72
+  stable_min_1d_pct: -3.0
+  stable_max_1d_pct: 5.0
+  stable_min_5d_pct: -10.0
+  stable_max_5d_pct: 20.0
+  high_threshold_5d_pct: 15.0
+  remove_stable_when_news_expired: true
+  allow_high_to_stable: false
+
+# 存储配置（数据库，用于交易记录 / 止盈止损 / 回测 / 新闻库）
 storage:
   enabled: true
+  news_expire_hours: 24   # 新闻超过该小时数标为 expired，不再参与实时交易
   database:
     url: ""   # 空则默认 data/stock_flash.db（SQLite）
 
@@ -101,7 +123,7 @@ trading:
   hold_days_min: 1         # 最短持仓天数，避免当日买卖
   # OpenCTP 仿真/7x24（mode=ctp 时使用）；敏感信息建议用环境变量：${OPENCTP_USER}、${OPENCTP_PASSWORD}
   ctp:
-    enabled: false
+    enabled: true
     user_id: "17572"        # 7x24 账号（全天可测）；仿真可用 16988
     password: "123456"
     broker_id: "9999"

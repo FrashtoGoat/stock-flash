@@ -7,6 +7,7 @@ import queue
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -45,12 +46,13 @@ def _run_ctp_client(
     login_ok: list[bool],
     login_msg: list[str],
 ) -> None:
-    """在独立线程中运行 CTP API：登录后从 cmd_queue 取指令（order/quit），结果放入 result_queue。"""
+    """在独立线程中运行 CTP API：登录后从 cmd_queue 取指令（order/quit），结果放入 result_queue。
+    连接 OpenCTP 必须用 openctp-tts（TTS 的 CTPAPI），用 openctp-ctp 会报 4097 断开。"""
     try:
-        from openctp_ctp import tdapi
+        from openctp_tts import tdapi
     except ImportError as e:
         login_ok.append(False)
-        login_msg.append(f"未安装 openctp-ctp: {e}")
+        login_msg.append(f"未安装 openctp-tts，连接 OpenCTP 需用 TTS 库: {e}")
         login_event.set()
         return
 
@@ -96,6 +98,23 @@ def _run_ctp_client(
                 login_msg.append("")
             login_event.set()
 
+        def OnFrontDisconnected(self, nReason: int) -> None:
+            """前置断开时触发，常见 nReason：0=网络断开 4097=连接被拒或协议不匹配"""
+            if not login_ok:  # 尚未收到登录结果则标记为失败，避免一直等待
+                login_ok.append(False)
+                login_msg.append(f"交易前置断开 nReason={nReason}，请检查网络与前置地址")
+                login_event.set()
+            logger.warning("CTP 交易前置已断开: nReason=%s", nReason)
+
+        def _put_order_result(self, result: CTPOrderResult) -> None:
+            if getattr(self, "_order_response_sent", False):
+                return
+            self._order_response_sent = True
+            try:
+                result_queue.put_nowait(result)
+            except queue.Full:
+                pass
+
         def OnRspOrderInsert(
             self,
             pInputOrder: tdapi.CThostFtdcInputOrderField,
@@ -115,10 +134,23 @@ def _run_ctp_client(
                     message="已报",
                     order_sys_id=getattr(pInputOrder, "OrderSysID", "") or "",
                 )
-            try:
-                result_queue.put_nowait(self._order_results[nRequestID])
-            except queue.Full:
-                pass
+            self._put_order_result(self._order_results[nRequestID])
+
+        def OnErrRtnOrderInsert(
+            self,
+            pInputOrder: tdapi.CThostFtdcInputOrderField,
+            pRspInfo: tdapi.CThostFtdcRspInfoField,
+        ) -> None:
+            """报单被柜台拒绝时触发，与 OnRspOrderInsert 二选一"""
+            if pRspInfo and pRspInfo.ErrorID != 0:
+                msg = (pRspInfo.ErrorMsg or "").strip() or f"ErrorID={pRspInfo.ErrorID}"
+            else:
+                msg = "报单拒绝"
+            self._put_order_result(CTPOrderResult(
+                success=False,
+                order_ref=pInputOrder.OrderRef if pInputOrder else "",
+                message=msg,
+            ))
 
         def OnRtnOrder(
             self,
@@ -129,7 +161,11 @@ def _run_ctp_client(
                 logger.debug("CTP 报单回报: OrderRef=%s OrderSysID=%s OrderStatus=%s",
                              getattr(pOrder, "OrderRef", ""), getattr(pOrder, "OrderSysID", ""), getattr(pOrder, "OrderStatus", ""))
 
-    flow_path = "flow_ctp_" + str(time.time_ns())
+    # flow 文件统一放到 result/flow_ctp/ 下，避免污染项目根目录
+    project_root = Path(__file__).resolve().parent.parent.parent
+    flow_dir = project_root / "result" / "flow_ctp"
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    flow_path = str(flow_dir / ("flow_ctp_" + str(time.time_ns())))
     api = tdapi.CThostFtdcTraderApi.CreateFtdcTraderApi(flow_path)
     spi = Spi(api)
     api.RegisterSpi(spi)
@@ -171,6 +207,7 @@ def _run_ctp_client(
             req.ForceCloseReason = tdapi.THOST_FTDC_FCC_NotForceClose
             rid = next_request_id()
             spi._order_results[rid] = None
+            spi._order_response_sent = False
             ret = api.ReqOrderInsert(req, rid)
             if ret != 0:
                 result_queue.put_nowait(CTPOrderResult(success=False, order_ref=req.OrderRef, message=f"ReqOrderInsert 返回 {ret}"))
@@ -253,7 +290,7 @@ class OpenCTPClient:
         volume = max(100, int(amount_yuan / price / 100) * 100)
         try:
             self._cmd_queue.put(("order", direction, exchange_id, instrument_id, price, volume))
-            return self._result_queue.get(timeout=15)
+            return self._result_queue.get(timeout=20)
         except queue.Empty:
             return CTPOrderResult(success=False, order_ref="", message="等待报单回报超时")
         except Exception as e:

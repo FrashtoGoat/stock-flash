@@ -19,9 +19,14 @@ from src.models.stock import MarketCondition, TradeSignal
 logger = logging.getLogger(__name__)
 
 
-def _build_short_text(market: MarketCondition, signals: list[TradeSignal]) -> str:
+def _build_short_text(
+    market: MarketCondition,
+    signals: list[TradeSignal],
+    source: str = "新闻驱动",
+) -> str:
     """构建纯文本摘要，用于企微/PushPlus"""
     lines = [
+        f"【来源】{source}",
         f"【大盘】{market.index_name} {market.current_price:.2f} ({market.change_pct:+.2f}%)",
         "可交易" if market.is_tradable else f"不宜交易: {market.reason}",
         "",
@@ -37,6 +42,7 @@ def _build_short_text(market: MarketCondition, signals: list[TradeSignal]) -> st
 _EMAIL_TEMPLATE = """\
 <html><body>
 <h2>📊 Stock Flash 交易信号通知</h2>
+<p><b>来源</b>: {{ source }}</p>
 
 <h3>大盘环境</h3>
 <p>{{ market.index_name }}: {{ "%.2f"|format(market.current_price) }}
@@ -72,6 +78,7 @@ _EMAIL_TEMPLATE = """\
 async def send_email_notification(
     market: MarketCondition,
     signals: list[TradeSignal],
+    source: str = "新闻驱动",
 ) -> bool:
     """发送邮件通知"""
     cfg = get("notification", "email") or {}
@@ -91,10 +98,10 @@ async def send_email_notification(
         return False
 
     tpl = Template(_EMAIL_TEMPLATE)
-    html = tpl.render(market=market, signals=signals)
+    html = tpl.render(market=market, signals=signals, source=source)
 
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = Header(f"Stock Flash: {market.index_name} {market.change_pct:+.2f}% | {len(signals)} 个信号", "utf-8")
+    msg["Subject"] = Header(f"Stock Flash [{source}]: {market.index_name} {market.change_pct:+.2f}% | {len(signals)} 个信号", "utf-8")
     if sender_name:
         msg["From"] = formataddr((str(Header(sender_name, "utf-8")), sender))
     else:
@@ -119,6 +126,7 @@ async def send_email_notification(
 async def send_wecom_webhook(
     market: MarketCondition,
     signals: list[TradeSignal],
+    source: str = "新闻驱动",
 ) -> bool:
     """企业微信群机器人 webhook 通知（不麻烦：群设置 -> 添加机器人 -> 复制 webhook 即可）"""
     cfg = get("notification", "wechat") or {}
@@ -129,7 +137,7 @@ async def send_wecom_webhook(
         logger.debug("企微 webhook_url 未配置，跳过")
         return False
 
-    text = _build_short_text(market, signals)
+    text = _build_short_text(market, signals, source=source)
     body = {"msgtype": "text", "text": {"content": text}}
 
     try:
@@ -146,6 +154,7 @@ async def send_wecom_webhook(
 async def send_pushplus(
     market: MarketCondition,
     signals: list[TradeSignal],
+    source: str = "新闻驱动",
 ) -> bool:
     """PushPlus 推送到个人微信（需在 pushplus.plus 绑定微信获取 token）。
     若手机未收到：请检查 (1) token 是否正确 (2) 是否已在 pushplus.plus 绑定微信并关注公众号
@@ -158,8 +167,8 @@ async def send_pushplus(
         logger.debug("PushPlus token 未配置，跳过")
         return False
 
-    text = _build_short_text(market, signals)
-    title = f"Stock Flash | {market.index_name} {market.change_pct:+.2f}% | {len(signals)} 个信号"
+    text = _build_short_text(market, signals, source=source)
+    title = f"Stock Flash [{source}] | {market.index_name} {market.change_pct:+.2f}% | {len(signals)} 个信号"
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -184,8 +193,9 @@ async def send_pushplus(
 async def notify(
     market: MarketCondition,
     signals: list[TradeSignal],
+    source: str = "新闻驱动",
 ) -> None:
-    """统一通知入口：邮件 / 企微 webhook / PushPlus(个微)"""
-    await send_email_notification(market, signals)
-    await send_wecom_webhook(market, signals)
-    await send_pushplus(market, signals)
+    """统一通知入口：邮件 / 企微 webhook / PushPlus(个微)。source 标明路线来源（新闻驱动/自研池）。"""
+    await send_email_notification(market, signals, source=source)
+    await send_wecom_webhook(market, signals, source=source)
+    await send_pushplus(market, signals, source=source)

@@ -61,8 +61,12 @@ class SimulatedExecutor:
         self.max_total_positions = cfg.get("max_total_positions", 5)
         self.default_amount = cfg.get("default_amount", 10000)
 
-    async def execute(self, signals: list[TradeSignal]) -> list[TradeRecord]:
-        """模拟执行交易信号"""
+    async def execute(
+        self,
+        signals: list[TradeSignal],
+        source: str | None = None,
+    ) -> tuple[list[TradeRecord], list[int]]:
+        """模拟执行交易信号。source 标明路线来源（新闻驱动/自研池）。"""
         records: list[TradeRecord] = []
 
         for signal in signals[: self.max_total_positions]:
@@ -75,13 +79,14 @@ class SimulatedExecutor:
                 status="simulated",
                 message=f"模拟{verb} {signal.stock.name}({signal.stock.code}) "
                         f"金额 {signal.amount:.0f}元",
+                source=source,
             )
             records.append(record)
             logger.info("模拟交易: %s", record.message)
 
         self._save_records(records)
-        self._save_to_db(records)
-        return records
+        trade_ids = self._save_to_db(records)
+        return records, trade_ids
 
     def _save_records(self, records: list[TradeRecord]) -> None:
         """持久化交易记录到 JSON 文件（result/trades/YYYY-MM-DD/）"""
@@ -93,13 +98,14 @@ class SimulatedExecutor:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("交易记录已保存: %s", path)
 
-    def _save_to_db(self, records: list[TradeRecord]) -> None:
-        """若启用存储则写入数据库"""
+    def _save_to_db(self, records: list[TradeRecord]) -> list[int]:
+        """若启用存储则写入数据库，返回写入的 trade id 列表"""
         try:
             from src.db.repository import save_trade_records
-            save_trade_records(records)
+            return save_trade_records(records)
         except Exception:
             logger.debug("未启用数据库存储或写入失败，已忽略")
+            return []
 
 
 class PaperExecutor:
@@ -114,7 +120,11 @@ class PaperExecutor:
         self.max_total_positions = cfg.get("max_total_positions", 5)
         logger.info("模拟盘执行器已初始化 (broker=%s)", self.broker)
 
-    async def execute(self, signals: list[TradeSignal]) -> list[TradeRecord]:
+    async def execute(
+        self,
+        signals: list[TradeSignal],
+        source: str | None = None,
+    ) -> tuple[list[TradeRecord], list[int]]:
         records: list[TradeRecord] = []
         for signal in signals[: self.max_total_positions]:
             verb = "卖出" if signal.direction == TradeDirection.SELL else "买入"
@@ -125,12 +135,13 @@ class PaperExecutor:
                 exec_time=datetime.now(),
                 status="paper",
                 message=f"模拟盘委托{verb} {signal.stock.name}({signal.stock.code}) 金额 {signal.amount:.0f}元",
+                source=source,
             )
             records.append(record)
             logger.info("模拟盘: %s", record.message)
         self._save_records(records)
-        self._save_to_db(records)
-        return records
+        trade_ids = self._save_to_db(records)
+        return records, trade_ids
 
     def _save_records(self, records: list[TradeRecord]) -> None:
         if not records:
@@ -141,12 +152,13 @@ class PaperExecutor:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("模拟盘记录已保存: %s", path)
 
-    def _save_to_db(self, records: list[TradeRecord]) -> None:
+    def _save_to_db(self, records: list[TradeRecord]) -> list[int]:
         try:
             from src.db.repository import save_trade_records
-            save_trade_records(records)
+            return save_trade_records(records)
         except Exception:
             logger.debug("未启用数据库存储或写入失败，已忽略")
+            return []
 
 
 class CTPExecutor:
@@ -178,7 +190,11 @@ class CTPExecutor:
             self._client = OpenCTPClient(**self._client_kw)
         return self._client
 
-    async def execute(self, signals: list[TradeSignal]) -> list[TradeRecord]:
+    async def execute(
+        self,
+        signals: list[TradeSignal],
+        source: str | None = None,
+    ) -> tuple[list[TradeRecord], list[int]]:
         records: list[TradeRecord] = []
         client = self._get_client()
         for signal in signals[: self.max_total_positions]:
@@ -192,6 +208,7 @@ class CTPExecutor:
                     exec_time=datetime.now(),
                     status="ctp_skip",
                     message=f"CTP 跳过{verb} {signal.stock.name}({signal.stock.code})：无有效价格",
+                    source=source,
                 )
                 records.append(record)
                 logger.warning("CTP 跳过: %s", record.message)
@@ -215,12 +232,13 @@ class CTPExecutor:
                 exec_time=datetime.now(),
                 status="ctp",
                 message=msg,
+                source=source,
             )
             records.append(record)
             logger.info("CTP: %s", msg)
         self._save_records(records)
-        self._save_to_db(records)
-        return records
+        trade_ids = self._save_to_db(records)
+        return records, trade_ids
 
     def _save_records(self, records: list[TradeRecord]) -> None:
         if not records:
@@ -231,12 +249,13 @@ class CTPExecutor:
         path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
         logger.info("CTP 交易记录已保存: %s", path)
 
-    def _save_to_db(self, records: list[TradeRecord]) -> None:
+    def _save_to_db(self, records: list[TradeRecord]) -> list[int]:
         try:
             from src.db.repository import save_trade_records
-            save_trade_records(records)
+            return save_trade_records(records)
         except Exception:
             logger.debug("未启用数据库存储或写入失败，已忽略")
+            return []
 
 
 class LiveExecutor:
@@ -249,7 +268,11 @@ class LiveExecutor:
         self.broker = cfg.get("broker", "eastmoney")
         logger.warning("实盘交易执行器已初始化 (broker=%s)，请谨慎使用", self.broker)
 
-    async def execute(self, signals: list[TradeSignal]) -> list[TradeRecord]:
+    async def execute(
+        self,
+        signals: list[TradeSignal],
+        source: str | None = None,
+    ) -> tuple[list[TradeRecord], list[int]]:
         raise NotImplementedError("实盘交易接口尚未实现，请使用 trading.mode: simulated 或 paper")
 
 
