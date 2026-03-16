@@ -17,6 +17,24 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+def _to_float(v):
+    """将行情字段转为 float（兼容字符串、逗号、百分号等）。失败返回 None。"""
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip().replace(",", "")
+        if s.endswith("%"):
+            s = s[:-1].strip()
+        if s in ("", "-", "—", "N/A", "NA", "None"):
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+    return None
+
 
 class CircuitBreaker:
     """简单熔断器：连续失败 threshold 次后，冷却 cooldown 秒"""
@@ -122,7 +140,14 @@ def get_realtime_quote(code: str) -> dict:
         ("akshare_spot", lambda **kw: _akshare_indicator(**kw)),
     ])
     out = result if isinstance(result, dict) else {}
-    price = out.get("最新") if isinstance(out.get("最新"), (int, float)) else None
+    # 统一做一次数值化，避免上游返回字符串导致“未取到行情”
+    for k in ("最新", "量比", "换手率", "涨跌幅", "成交量", "成交额", "流通市值", "总市值"):
+        if k in out:
+            fv = _to_float(out.get(k))
+            if fv is not None:
+                out[k] = fv
+
+    price = _to_float(out.get("最新"))
     if price is not None:
         logger.info("行情[实时] %s 最新价=%.2f 获取成功", code, price)
     else:

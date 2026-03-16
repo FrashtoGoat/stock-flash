@@ -8,6 +8,12 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+try:
+    # Python 3.9+
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[assignment]
+
 # 北京时区：A 股 9:30-11:30、13:00-15:00
 _MORNING_START = time(9, 30)
 _MORNING_END = time(11, 30)
@@ -51,9 +57,15 @@ def is_trading_day(d: Optional[date] = None) -> bool:
 
 def is_trading_time(dt: Optional[datetime] = None) -> bool:
     """判断当前（或给定时间）是否在 A 股交易时段内（9:30-11:30、13:00-15:00）。
-    使用本地时间，若本机为北京时区则正确；否则需自行保证传入已转为北京时间。"""
+    统一按北京时间(Asia/Shanghai)判断，避免本机时区不同导致误判。"""
     if dt is None:
-        dt = datetime.now()
+        if ZoneInfo is not None:
+            dt = datetime.now(ZoneInfo("Asia/Shanghai"))
+        else:
+            dt = datetime.now()
+    # 若传入为带 tz 的时间，转为北京时间；若为 naive，则按其本身 time() 视为本地（尽量不抛错）
+    if getattr(dt, "tzinfo", None) is not None and ZoneInfo is not None:
+        dt = dt.astimezone(ZoneInfo("Asia/Shanghai"))
     t = dt.time()
     if _MORNING_START <= t <= _MORNING_END:
         return True
@@ -65,14 +77,20 @@ def is_trading_time(dt: Optional[datetime] = None) -> bool:
 def is_in_trading_session(dt: Optional[datetime] = None) -> bool:
     """是否处于「交易日 + 交易时段」内。"""
     if dt is None:
-        dt = datetime.now()
+        if ZoneInfo is not None:
+            dt = datetime.now(ZoneInfo("Asia/Shanghai"))
+        else:
+            dt = datetime.now()
     return is_trading_day(dt.date()) and is_trading_time(dt)
 
 
 def skip_reason(dt: Optional[datetime] = None) -> str:
     """若当前应跳过流水线，返回原因字符串；否则返回空字符串。"""
     if dt is None:
-        dt = datetime.now()
+        if ZoneInfo is not None:
+            dt = datetime.now(ZoneInfo("Asia/Shanghai"))
+        else:
+            dt = datetime.now()
     if not is_trading_day(dt.date()):
         return "非交易日"
     if not is_trading_time(dt):

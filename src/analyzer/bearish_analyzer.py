@@ -22,10 +22,22 @@ from src.models.stock import (
 logger = logging.getLogger(__name__)
 
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "config" / "prompts"
+_AGENT_DIR = Path(__file__).resolve().parent.parent.parent / "agent"
 
 
 def _load_prompt(name: str) -> str:
     return (_PROMPTS_DIR / name).read_text(encoding="utf-8")
+
+
+def _load_macro_agent_persona() -> str:
+    """加载宏观分析师人设（可选）。不存在则返回空字符串。"""
+    try:
+        p = _AGENT_DIR / "]micro_professor.md"
+        if p.exists():
+            return p.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    return ""
 
 
 def _parse_bearish_response(text: str) -> BearishAnalysis:
@@ -82,6 +94,9 @@ async def analyze_bearish(news_list: list[NewsItem]) -> BearishAnalysis:
     provider = create_provider()
 
     system_prompt = _load_prompt("bearish_system.txt")
+    persona = _load_macro_agent_persona().strip()
+    if persona:
+        system_prompt = f"{persona}\n\n---\n\n{system_prompt}"
     user_template = _load_prompt("bearish_user.txt")
     news_block = _build_news_block(news_list)
     user_prompt = user_template.format(count=len(news_list), news_block=news_block)

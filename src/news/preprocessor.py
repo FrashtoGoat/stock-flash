@@ -80,6 +80,42 @@ _NEGATIVE_WORDS = [
     "减持", "清仓", "断崖", "熔断", "制裁", "暂停上市",
 ]
 
+_PRICE_ACTION_WORDS = [
+    "涨停", "跌停", "大涨", "大跌", "暴涨", "暴跌", "飙升", "跳水",
+    "领涨", "领跌", "冲高回落", "高开高走", "放量上涨", "放量下跌",
+    "创新高", "新高", "创历史新高", "逼近涨停", "封板", "炸板",
+]
+
+_CATALYST_WORDS = [
+    # 更偏“信息驱动”的触发因素（避免把纯走势当成信号）
+    "中标", "订单", "签约", "合作", "落地", "获批", "批复", "立项",
+    "政策", "国务院", "证监会", "发改委", "央行", "两会",
+    "业绩", "预增", "预减", "年报", "季报", "利润", "营收", "指引",
+    "回购", "增持", "减持", "重组", "并购", "募资", "定增",
+    "停产", "复产", "涨价", "降价", "供给", "需求", "出口", "关税",
+]
+
+
+def _is_price_action_only(news: NewsItem) -> bool:
+    """是否属于“涨了/跌了”型快讯（更多描述走势而非信息变化）。"""
+    text = news.content or ""
+    if not text:
+        return False
+    has_price_action = any(w in text for w in _PRICE_ACTION_WORDS)
+    if not has_price_action:
+        return False
+    # 若包含明显催化词，则不算“纯走势”
+    has_catalyst = any(w in text for w in _CATALYST_WORDS)
+    if has_catalyst:
+        return False
+    # 市场类/中性/且有明确标的时，通常就是“谁涨了”的快讯
+    if news.category in (NewsCategory.MARKET, NewsCategory.OTHER) and news.related_stocks:
+        return True
+    # 其它分类里也可能出现“纯走势”描述，但更谨慎：必须同时是正/负情绪且带标的
+    if news.sentiment != NewsSentiment.NEUTRAL and news.related_stocks:
+        return True
+    return False
+
 
 def detect_sentiment(news: NewsItem) -> NewsSentiment:
     """判断新闻情绪"""
@@ -106,6 +142,10 @@ def should_analyze(news: NewsItem) -> bool:
     3. 重要性 >= 2
     4. 分类为 公司/行业/政策/科技 且有关键词
     """
+    # 先过滤“已涨成事实”的走势型快讯，避免黑盒式追涨推送
+    if _is_price_action_only(news):
+        return False
+
     if news.related_stocks:
         return True
 

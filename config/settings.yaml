@@ -110,6 +110,7 @@ storage:
 # 交易配置（mode: simulated 仅落库 | paper 模拟盘 | ctp OpenCTP仿真 | live 实盘暂未实现）
 trading:
   mode: "simulated"   # simulated / paper / ctp(OpenCTP仿真) / live
+  force_simulated_trade_outside_hours: false  # true 时 simulated/paper 忽略交易时段限制也会执行(落库/模拟盘)
   broker: "eastmoney"
   max_position_pct: 10
   max_total_positions: 5
@@ -172,7 +173,7 @@ scheduler:
   enabled: true
   jobs:
     - name: "both_routes"
-      cron: "0 0,1,8-23 * * *"
+      cron: "0 */2 * * *"   # 每 2 小时一次（双路线：新闻驱动+自研池）
       run_both: true
     - name: "macro_daily"
       cron: "0 8 * * *"

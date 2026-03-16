@@ -14,23 +14,35 @@ import httpx
 from jinja2 import Template
 
 from src.config import get
-from src.models.stock import MarketCondition, TradeSignal
+from src.models.stock import FilterResult, MarketCondition, TradeSignal
 
 logger = logging.getLogger(__name__)
 
+_FILTER_DISPLAY = {
+    "board_filter": "板块",
+    "affordability_filter": "可买",
+    "anomaly_filter": "异动",
+    "master_filter": "基本面",
+    "institution_filter": "机构",
+    "technical_filter": "技术",
+}
+
 
 def _confidence_and_conditions(signal: TradeSignal, source: str) -> str:
-    """返回信心说明与满足条件：为何是该百分比、原因里通过了哪些环节。"""
+    """返回信心说明与满足条件：为何是该百分比、原因里通过了哪些环节、每环通过标准（可解释，非黑盒）。"""
     pct = round(signal.confidence * 100)
     reason = signal.reason or ""
+    filter_reason = getattr(signal, "filter_pass_reason", None) or ""
     if source == "自研池" and "通过链式筛选:" in reason:
-        # 自研池：信心 = 基础 50% + 每过一环 +7%，上限 95%
         part = reason.split("通过链式筛选:")[-1].strip()
         conditions = [x.strip() for x in part.split(",") if x.strip()]
         n = len(conditions)
-        expl = f"{pct}%：共{n}环全部通过（{', '.join(conditions)}），基础50%+每环7%。满足条件：{', '.join(conditions)}。"
+        expl = f"{pct}%：共{n}环全部通过（{', '.join(conditions)}），基础50%+每环7%。"
+        if filter_reason:
+            expl += f" 通过标准：{filter_reason}"
+        else:
+            expl += f" 满足条件：{', '.join(conditions)}。"
         return expl
-    # 新闻驱动或其它：信心来自 LLM 综合评分
     return f"{pct}%：来自 LLM 对新闻与标的的综合评分。原因：{reason[:80]}{'…' if len(reason) > 80 else ''}"
 
 
@@ -38,6 +50,7 @@ def _build_short_text(
     market: MarketCondition,
     signals: list[TradeSignal],
     source: str = "新闻驱动",
+    failed_results: list[FilterResult] | None = None,
 ) -> str:
     """构建纯文本摘要，用于企微/PushPlus"""
     lines = [
@@ -46,6 +59,12 @@ def _build_short_text(
         "可交易" if market.is_tradable else f"不宜交易: {market.reason}",
         "",
     ]
+    if source == "自研池" and failed_results:
+        lines.append(f"【自研池未通过】{len(failed_results)} 个")
+        for r in failed_results[:10]:
+            failed_chain = ", ".join(_FILTER_DISPLAY.get(f, f) for f in r.failed_filters)
+            lines.append(f"  {r.stock.name}({r.stock.code}) 未通过: {failed_chain}")
+        lines.append("")
     if signals:
         sells = [s for s in signals if s.direction.value == "sell"]
         buys = [s for s in signals if s.direction.value == "buy"]
@@ -59,7 +78,17 @@ def _build_short_text(
             lines.append(f"【买入信号】{len(buys)} 个")
             for s in buys[:10]:
                 expl = _confidence_and_conditions(s, source)
-                lines.append(f"  {s.stock.name}({s.stock.code}) 买入 {s.amount:.0f} 元 | {expl}")
+                price_info = ""
+                if s.suggested_buy_price is not None or s.suggested_sell_price is not None:
+                    parts = []
+                    if s.suggested_buy_price is not None:
+                        parts.append(f"建议买{s.suggested_buy_price:.2f}")
+                    if s.suggested_sell_price is not None:
+                        parts.append(f"建议卖{s.suggested_sell_price:.2f}")
+                    price_info = " | " + " ".join(parts)
+                else:
+                    price_info = " | 未取到行情(无建议买卖价)"
+                lines.append(f"  {s.stock.name}({s.stock.code}) 买入 {s.amount:.0f} 元{price_info} | {expl}")
     else:
         lines.append("【信号】本次无交易信号")
     return "\n".join(lines)
@@ -95,16 +124,18 @@ _EMAIL_TEMPLATE = """\
 {% if buy_signals %}
 <h3>买入信号 ({{ buy_signals|length }}个)</h3>
 <table border="1" cellpadding="6" cellspacing="0">
-<tr><th>代码</th><th>名称</th><th>方向</th><th>金额</th><th>信心</th><th>原因</th><th>信心说明与满足条件</th></tr>
+<tr><th>代码</th><th>名称</th><th>方向</th><th>金额</th><th>现价</th><th>建议买入价</th><th>建议卖出价</th><th>信心</th><th>原因/分析</th></tr>
 {% for s in buy_signals %}
 <tr>
   <td>{{ s.stock.code }}</td>
   <td>{{ s.stock.name }}</td>
   <td>买入</td>
   <td>{{ "%.0f"|format(s.amount) }}</td>
+  <td>{% if s.price is not none %}{{ "%.2f"|format(s.price) }}{% else %}—(未取到行情){% endif %}</td>
+  <td>{% if s.suggested_buy_price is not none %}{{ "%.2f"|format(s.suggested_buy_price) }}{% else %}—(未取到行情){% endif %}</td>
+  <td>{% if s.suggested_sell_price is not none %}{{ "%.2f"|format(s.suggested_sell_price) }}{% else %}—(未取到行情){% endif %}</td>
   <td>{{ "%.0f"|format(s.confidence * 100) }}%</td>
-  <td>{{ s.reason }}</td>
-  <td>{{ confidence_explanations[loop.index0] }}</td>
+  <td>{{ s.reason }}<br/>{{ confidence_explanations[loop.index0] }}</td>
 </tr>
 {% endfor %}
 </table>
@@ -112,6 +143,17 @@ _EMAIL_TEMPLATE = """\
 
 {% if not sell_signals and not buy_signals %}
 <p>本次扫描无交易信号。</p>
+{% endif %}
+
+{% if research_pool_failed %}
+<h3>自研池未通过标的 ({{ research_pool_failed|length }}个)</h3>
+<p>以下标的未通过链式筛选，便于核对为何未推荐。</p>
+<table border="1" cellpadding="6" cellspacing="0">
+<tr><th>代码</th><th>名称</th><th>未通过环节</th></tr>
+{% for r in research_pool_failed %}
+<tr><td>{{ r.code }}</td><td>{{ r.name }}</td><td>{{ r.failed_chain }}</td></tr>
+{% endfor %}
+</table>
 {% endif %}
 
 <hr><small>Stock Flash 自动生成 · 仅供参考 · 满足卖出条件时同样会通知</small>
@@ -123,8 +165,9 @@ async def send_email_notification(
     market: MarketCondition,
     signals: list[TradeSignal],
     source: str = "新闻驱动",
+    failed_results: list[FilterResult] | None = None,
 ) -> bool:
-    """发送邮件通知。含买入与卖出信号；买入信号附带信心说明与满足条件。"""
+    """发送邮件通知。含买入与卖出信号；买入信号附带信心说明与满足条件。自研池时可传 failed_results 展示未通过标的及环节。"""
     cfg = get("notification", "email") or {}
     if not cfg.get("enabled", False):
         logger.info("邮件通知未启用")
@@ -145,6 +188,13 @@ async def send_email_notification(
     buy_signals = [s for s in signals if s.direction.value == "buy"]
     confidence_explanations = [_confidence_and_conditions(s, source) for s in buy_signals]
 
+    research_pool_failed = []
+    if source == "自研池" and failed_results:
+        research_pool_failed = [
+            {"code": r.stock.code, "name": r.stock.name, "failed_chain": ", ".join(_FILTER_DISPLAY.get(f, f) for f in r.failed_filters)}
+            for r in failed_results
+        ]
+
     tpl = Template(_EMAIL_TEMPLATE)
     html = tpl.render(
         market=market,
@@ -152,6 +202,7 @@ async def send_email_notification(
         sell_signals=sell_signals,
         buy_signals=buy_signals,
         confidence_explanations=confidence_explanations,
+        research_pool_failed=research_pool_failed,
     )
 
     subject_parts = [f"Stock Flash [{source}]", market.index_name, f"{market.change_pct:+.2f}%"]
@@ -184,10 +235,47 @@ async def send_email_notification(
         return False
 
 
+def send_custom_email(subject: str, html_body: str) -> bool:
+    """发送自定义 HTML 邮件（与 notification.email 配置共用，用于宏观报告等）。"""
+    cfg = get("notification", "email") or {}
+    if not cfg.get("enabled", False):
+        logger.info("邮件通知未启用，跳过自定义邮件")
+        return False
+    smtp_server = cfg.get("smtp_server", "")
+    smtp_port = cfg.get("smtp_port", 465)
+    sender = (cfg.get("sender") or "").strip()
+    sender_name = (cfg.get("sender_name") or "").strip()
+    password = cfg.get("password", "")
+    receivers = [r.strip() for r in cfg.get("receivers", []) if (r or "").strip()]
+    if not all([smtp_server, sender, password, receivers]):
+        logger.warning("邮件配置不完整，跳过发送")
+        return False
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = Header(subject, "utf-8")
+    if sender_name:
+        msg["From"] = formataddr((str(Header(sender_name, "utf-8")), sender))
+    else:
+        msg["From"] = sender
+    msg["To"] = ", ".join(receivers)
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
+    try:
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            auth_str = f"\0{sender}\0{password}"
+            b64 = base64.b64encode(auth_str.encode("utf-8")).decode("ascii")
+            server.docmd("AUTH PLAIN", b64)
+            server.sendmail(sender, receivers, msg.as_string())
+        logger.info("自定义邮件发送成功 -> %s", receivers)
+        return True
+    except Exception:
+        logger.exception("邮件发送失败")
+        return False
+
+
 async def send_wecom_webhook(
     market: MarketCondition,
     signals: list[TradeSignal],
     source: str = "新闻驱动",
+    failed_results: list[FilterResult] | None = None,
 ) -> bool:
     """企业微信群机器人 webhook 通知（不麻烦：群设置 -> 添加机器人 -> 复制 webhook 即可）"""
     cfg = get("notification", "wechat") or {}
@@ -198,7 +286,7 @@ async def send_wecom_webhook(
         logger.debug("企微 webhook_url 未配置，跳过")
         return False
 
-    text = _build_short_text(market, signals, source=source)
+    text = _build_short_text(market, signals, source=source, failed_results=failed_results)
     body = {"msgtype": "text", "text": {"content": text}}
 
     try:
@@ -216,6 +304,7 @@ async def send_pushplus(
     market: MarketCondition,
     signals: list[TradeSignal],
     source: str = "新闻驱动",
+    failed_results: list[FilterResult] | None = None,
 ) -> bool:
     """PushPlus 推送到个人微信（需在 pushplus.plus 绑定微信获取 token）。
     若手机未收到：请检查 (1) token 是否正确 (2) 是否已在 pushplus.plus 绑定微信并关注公众号
@@ -228,7 +317,7 @@ async def send_pushplus(
         logger.debug("PushPlus token 未配置，跳过")
         return False
 
-    text = _build_short_text(market, signals, source=source)
+    text = _build_short_text(market, signals, source=source, failed_results=failed_results)
     title = f"Stock Flash [{source}] | {market.index_name} {market.change_pct:+.2f}% | {len(signals)} 个信号"
 
     try:
@@ -255,8 +344,9 @@ async def notify(
     market: MarketCondition,
     signals: list[TradeSignal],
     source: str = "新闻驱动",
+    failed_results: list[FilterResult] | None = None,
 ) -> None:
-    """统一通知入口：邮件 / 企微 webhook / PushPlus(个微)。source 标明路线来源（新闻驱动/自研池）。"""
-    await send_email_notification(market, signals, source=source)
-    await send_wecom_webhook(market, signals, source=source)
-    await send_pushplus(market, signals, source=source)
+    """统一通知入口：邮件 / 企微 webhook / PushPlus(个微)。source 标明路线来源（新闻驱动/自研池）。自研池时可传 failed_results 展示未通过标的及环节。"""
+    await send_email_notification(market, signals, source=source, failed_results=failed_results)
+    await send_wecom_webhook(market, signals, source=source, failed_results=failed_results)
+    await send_pushplus(market, signals, source=source, failed_results=failed_results)

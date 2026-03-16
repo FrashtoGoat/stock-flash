@@ -17,6 +17,7 @@ from pathlib import Path
 from src.analyzer.bearish_analyzer import analyze_bearish
 from src.analyzer.llm_analyzer import analyze_news
 from src.config import get
+from src.data.fetcher_manager import get_realtime_quote
 from src.filters.factory import create_filter_chain
 from src.models.stock import (
     BoardType,
@@ -50,6 +51,20 @@ def _buy_amount_from_score(score_0_100: float, trading_cfg: dict) -> float:
     # 0.5 + 0.5 * score/100，评分高多买
     raw = default_amount * (0.5 + 0.5 * max(0, min(100, score_0_100)) / 100)
     return max(min_amt, min(max_amt, round(raw, 0)))
+
+
+def _suggested_prices(code: str, trading_cfg: dict) -> tuple[float | None, float | None, float | None]:
+    """根据现价与配置计算建议买入价、建议卖出价（止盈目标）。返回 (现价, 建议买入价, 建议卖出价)。"""
+    quote = get_realtime_quote(code)
+    latest = quote.get("最新")
+    if latest is None or not isinstance(latest, (int, float)):
+        return None, None, None
+    current = float(latest)
+    offset = float(trading_cfg.get("suggested_buy_offset_pct", -0.01))
+    stop_profit = float(trading_cfg.get("stop_profit_pct", 0.10))
+    buy = round(current * (1 + offset), 2)
+    sell = round(current * (1 + stop_profit), 2)
+    return current, buy, sell
 
 
 def _get_test_oil_news() -> list[NewsItem]:
@@ -177,16 +192,19 @@ async def pipeline_test() -> None:
     market = await judge_market()
 
     trading_cfg = get("trading") or {}
-    signals = [
-        TradeSignal(
+    signals = []
+    for r in passed:
+        cur, buy_p, sell_p = _suggested_prices(r.stock.code, trading_cfg)
+        signals.append(TradeSignal(
             stock=r.stock,
             direction=TradeDirection.BUY,
             amount=_buy_amount_from_score(r.stock.score, trading_cfg),
             reason=r.stock.reason,
             confidence=r.stock.score / 100,
-        )
-        for r in passed
-    ]
+            price=cur,
+            suggested_buy_price=buy_p,
+            suggested_sell_price=sell_p,
+        ))
 
     logger.info("[Step 7] 发送通知...")
     await notify(market, signals)
@@ -345,26 +363,32 @@ async def pipeline() -> None:
     logger.info("[Step 6] 大盘情况判断...")
     market = await judge_market()
 
-    # 构建交易信号
+    # 构建交易信号（含建议买入价、建议卖出价）
     trading_cfg = get("trading") or {}
-    signals = [
-        TradeSignal(
+    signals = []
+    for r in passed:
+        cur, buy_p, sell_p = _suggested_prices(r.stock.code, trading_cfg)
+        signals.append(TradeSignal(
             stock=r.stock,
             direction=TradeDirection.BUY,
             amount=_buy_amount_from_score(r.stock.score, trading_cfg),
             reason=r.stock.reason,
             confidence=r.stock.score / 100,
-        )
-        for r in passed
-    ]
+            price=cur,
+            suggested_buy_price=buy_p,
+            suggested_sell_price=sell_p,
+        ))
 
     # Step 7: 通知（标明来源：新闻驱动）
     logger.info("[Step 7] 发送通知...")
     await notify(market, signals, source="新闻驱动")
 
-    # Step 8: 交易执行（非交易时段/非交易日不执行，即使用最近交易日数据判为可交易也不下单）
+    # Step 8: 交易执行（默认：非交易时段/非交易日不执行，即使用最近交易日数据判为可交易也不下单）
     no_trade_reason = skip_reason(datetime.now())
-    if no_trade_reason:
+    trading_cfg = get("trading") or {}
+    mode = str(trading_cfg.get("mode", "simulated")).lower()
+    force_sim_trade = bool(trading_cfg.get("force_simulated_trade_outside_hours", False))
+    if no_trade_reason and not (force_sim_trade and mode in ("simulated", "paper")):
         logger.warning("[Step 8] %s，不执行交易", no_trade_reason)
     elif market.is_tradable:
         logger.info("[Step 8] 执行交易 (大盘可交易)...")
@@ -383,11 +407,11 @@ async def pipeline() -> None:
     if sell_signals:
         logger.info("[止盈止损] 产生 %d 个卖出信号", len(sell_signals))
         await notify(market, sell_signals, source="新闻驱动")
-        if not no_trade_reason:
+        if no_trade_reason and not (force_sim_trade and mode in ("simulated", "paper")):
+            logger.warning("[止盈止损] %s，不执行卖出", no_trade_reason)
+        else:
             executor = create_executor()
             _, _ = await executor.execute(sell_signals, source="新闻驱动")
-        else:
-            logger.warning("[止盈止损] %s，不执行卖出", no_trade_reason)
         if use_stock_pool:
             from src.db.stock_pool_repository import mark_removed
             codes = [s.stock.code for s in sell_signals]
@@ -448,18 +472,22 @@ async def pipeline_research_pool() -> None:
     chain = create_filter_chain()
     results = await chain.run(targets)
     passed = [r for r in results if r.is_passed]
+    failed = [r for r in results if not r.is_passed]
     if not passed:
         logger.info("自研池无标的通过筛选，流水线结束")
         return
     logger.info("%d 个标的通过筛选: %s",
                 len(passed),
                 ", ".join(f"{r.stock.name}({r.stock.code})" for r in passed))
+    if failed:
+        logger.info("自研池 %d 个标的未通过筛选，将写入通知", len(failed))
 
     logger.info("[自研池] 大盘情况判断...")
     market = await judge_market()
 
+    from src.filters.format_reasons import format_filter_pass_reasons
+
     trading_cfg = get("trading") or {}
-    # 信心与原因均来自链式筛选结果：信心 = 基础 0.5 + 每通过一环 +0.07 上限 0.95；原因 = 通过的筛选环节
     _filter_display = {
         "board_filter": "板块", "affordability_filter": "可买", "anomaly_filter": "异动",
         "master_filter": "基本面", "institution_filter": "机构", "technical_filter": "技术",
@@ -470,21 +498,30 @@ async def pipeline_research_pool() -> None:
         confidence = min(0.95, 0.5 + 0.07 * n)
         reason_chain = ", ".join(_filter_display.get(p, p) for p in r.passed_filters)
         reason = f"自研池 | 通过链式筛选: {reason_chain}"
+        filter_reason = format_filter_pass_reasons(r.passed_filters, r.details)
         score_0_100 = confidence * 100
+        cur, buy_p, sell_p = _suggested_prices(r.stock.code, trading_cfg)
         signals.append(TradeSignal(
             stock=r.stock,
             direction=TradeDirection.BUY,
             amount=_buy_amount_from_score(score_0_100, trading_cfg),
             reason=reason,
             confidence=confidence,
+            price=cur,
+            suggested_buy_price=buy_p,
+            suggested_sell_price=sell_p,
+            filter_pass_reason=filter_reason or None,
         ))
 
     logger.info("[自研池] 发送通知 (来源: 自研池)...")
-    await notify(market, signals, source="自研池")
+    await notify(market, signals, source="自研池", failed_results=failed if failed else None)
 
-    # 非交易时段/非交易日不执行交易（即使用最近交易日数据判断为可交易也不下单）
+    # 非交易时段/非交易日默认不执行交易（可选：模拟/模拟盘忽略时段落库）
     no_trade_reason = skip_reason(datetime.now())
-    if no_trade_reason:
+    trading_cfg = get("trading") or {}
+    mode = str(trading_cfg.get("mode", "simulated")).lower()
+    force_sim_trade = bool(trading_cfg.get("force_simulated_trade_outside_hours", False))
+    if no_trade_reason and not (force_sim_trade and mode in ("simulated", "paper")):
         logger.warning("[自研池] %s，不执行交易", no_trade_reason)
     elif market.is_tradable:
         logger.info("[自研池] 执行交易 (大盘可交易)...")
