@@ -113,6 +113,7 @@ def main() -> None:
     parser.add_argument("--test-ctp", action="store_true", help="测试 OpenCTP 连接与登录")
     parser.add_argument("--test-ctp-order", action="store_true", help="CTP 登录后发一笔测试限价单（低价不成交，仅验证报单）")
     parser.add_argument("--research-pool", action="store_true", help="自研池路线：从配置的股票列表跑链式筛选→通知→交易，来源标明「自研池」")
+    parser.add_argument("--macro", action="store_true", help="拉取一次宏观快照（美联储利率、美债收益率等），落 result/macro/")
     parser.add_argument("--once", action="store_true", default=True, help="执行一次流水线 (默认)")
     args = parser.parse_args()
 
@@ -134,6 +135,15 @@ def main() -> None:
         logger.info("运行复盘（新闻-交易关联，近 %d 天）...", args.review_days)
         from src.review import run_review
         run_review(since_days=args.review_days)
+    elif args.macro:
+        logger.info("拉取宏观快照...")
+        from src.macro import fetch_macro_snapshot
+        out = fetch_macro_snapshot()
+        if out.get("enabled") is False:
+            logger.info("宏观模块未启用")
+        else:
+            for item in out.get("items", []):
+                logger.info("  %s: %s %s (%s)", item.get("name"), item.get("value"), item.get("unit", ""), item.get("date", ""))
     elif args.test_ctp:
         logger.info("测试 CTP 连接与登录%s...", "并发一笔测试单" if args.test_ctp_order else "")
         _run_test_ctp(test_order=args.test_ctp_order)

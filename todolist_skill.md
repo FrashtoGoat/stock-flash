@@ -14,7 +14,7 @@
 
 ## 开发规则与记录
 
-> **提示词与执行结果**：凡涉及提示词、用户需求或执行结果，**必须**记录到项目根目录 **prompts.md**（脱敏、带日期）。与 `config/prompts/` 下模板保持一致，便于复现与迭代。**有提示词相关记录时须写入 prompts.md，不可只留在对话中。**
+> **提示词与执行结果**：凡涉及提示词、用户需求或执行结果，**必须**记录到项目根目录 **prompts.md**（脱敏、带日期）。与 `config/prompts/` 下模板保持一致，便于复现与迭代。**AI 在完成用户需求后须主动将当次需求与执行结果追加到 prompts.md，不可只留在对话中。**
 
 > **封装规则**：`main.py` 不直接引用任何具体实现类，所有组件通过工厂模式 + 配置文件驱动创建。新增实现只需：1) 写实现类 2) 加 `@register` 装饰器 3) 在 `settings.yaml` 中启用。
 
@@ -109,6 +109,23 @@
 | ~~回测模块~~ | ✅ | 已实现 run.py --backtest |
 | ~~数据库存储~~ | ✅ | 已实现 SQLite + trades 表 |
 | Web Dashboard | P3 | 可视化看板 |
+
+---
+
+## 宏观信息模块（已实现）
+
+（规划时间：2026-03-16 东八区；实现时间：同日至今日）
+
+**目标**：提供中美主要经济指标，供大盘判断与策略参考。
+
+**已实现**：
+- **模块**：`src/macro/`，`fetch_macro_snapshot()` 拉取美联储利率（akshare `macro_bank_usa_interest_rate`）、美国 10 年期国债收益率（`bond_zh_us_rate`）；美元指数可选（按 akshare 接口可用性）。
+- **落盘**：`result/macro/YYYY-MM-DD/HH.json`（按拉取时刻日期与小时写入）。
+- **定时**：scheduler 中 3 个 job：`macro_8`（8:00）、`macro_15`（15:00）、`macro_21`（21:00），与 both_routes 同进程、互不干扰。
+- **配置**：`config/settings.yaml` 下 `macro.enabled`；`scheduler.jobs` 中 `macro: true` 的 job。
+- **命令行**：`python run.py --macro` 拉取一次并打印。
+
+**待扩展**：美元指数稳定源、中国 LPR/PMI 等、推送摘要到邮件/企微。
 
 ---
 

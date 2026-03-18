@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -17,6 +18,12 @@ async def _run_both_routes() -> None:
     """先跑新闻驱动，再跑自研池，互不干扰（便于持续观察两条路线）。"""
     await pipeline()
     await pipeline_research_pool()
+
+
+async def _run_macro() -> None:
+    """拉取宏观快照（美联储利率、美债收益率等），落 result/macro/。"""
+    from src.macro import fetch_macro_snapshot
+    await asyncio.to_thread(fetch_macro_snapshot)
 
 
 def _parse_cron(expr: str) -> dict:
@@ -59,7 +66,13 @@ def create_scheduler() -> AsyncIOScheduler:
         if not cron_expr:
             continue
         run_both = job.get("run_both", False)
-        fn = _run_both_routes if run_both else pipeline
+        run_macro = job.get("macro", False)
+        if run_macro:
+            fn = _run_macro
+        elif run_both:
+            fn = _run_both_routes
+        else:
+            fn = pipeline
 
         try:
             cron_params = _parse_cron(cron_expr)
@@ -70,7 +83,8 @@ def create_scheduler() -> AsyncIOScheduler:
                 name=name,
                 replace_existing=True,
             )
-            logger.info("定时任务已添加: %s -> %s (%s)", name, cron_expr, "双路线" if run_both else "新闻驱动")
+            kind = "宏观" if run_macro else ("双路线" if run_both else "新闻驱动")
+            logger.info("定时任务已添加: %s -> %s (%s)", name, cron_expr, kind)
         except Exception:
             logger.exception("添加定时任务失败: %s", name)
 

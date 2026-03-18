@@ -165,6 +165,9 @@ class TradeSignal(BaseModel):
     amount: float = 10000
     reason: str = ""
     confidence: float = Field(default=0.0, ge=0, le=1.0)
+    suggested_buy_price: Optional[float] = None   # 建议买入价（链式筛选后根据现价与配置计算）
+    suggested_sell_price: Optional[float] = None  # 建议卖出价（止盈目标价）
+    filter_pass_reason: Optional[str] = None      # 每环通过标准/依据（可解释，非黑盒）
     created_at: datetime = Field(default_factory=datetime.now)
 
 

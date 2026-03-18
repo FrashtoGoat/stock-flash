@@ -473,12 +473,6 @@ async def pipeline_research_pool() -> None:
     results = await chain.run(targets)
     passed = [r for r in results if r.is_passed]
     failed = [r for r in results if not r.is_passed]
-    if not passed:
-        logger.info("自研池无标的通过筛选，流水线结束")
-        return
-    logger.info("%d 个标的通过筛选: %s",
-                len(passed),
-                ", ".join(f"{r.stock.name}({r.stock.code})" for r in passed))
     if failed:
         logger.info("自研池 %d 个标的未通过筛选，将写入通知", len(failed))
 
@@ -493,6 +487,20 @@ async def pipeline_research_pool() -> None:
         "master_filter": "基本面", "institution_filter": "机构", "technical_filter": "技术",
     }
     signals = []
+    if not passed:
+        logger.info("自研池无标的通过筛选，仍发通知说明未通过标的")
+        await notify(market, [], source="自研池", failed_results=failed if failed else None)
+        no_trade_reason = skip_reason(datetime.now())
+        if no_trade_reason:
+            logger.warning("[自研池] %s，不执行交易", no_trade_reason)
+        elapsed = (datetime.now() - start).total_seconds()
+        logger.info("===== Pipeline [自研池] 完成，耗时 %.1f秒 =====", elapsed)
+        return
+
+    logger.info("%d 个标的通过筛选: %s",
+                len(passed),
+                ", ".join(f"{r.stock.name}({r.stock.code})" for r in passed))
+
     for r in passed:
         n = len(r.passed_filters)
         confidence = min(0.95, 0.5 + 0.07 * n)
